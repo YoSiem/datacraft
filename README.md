@@ -1,176 +1,244 @@
-# DataCraft
+<p align="center">
+  <img src="assets/icon.png" width="112" height="112" alt="DataCraft application icon">
+</p>
 
-DataGrip-style database client for macOS and Windows (Islands theme), written in Rust with egui.
+<h1 align="center">DataCraft</h1>
 
-![DataCraft table data editor](docs/screenshots/table-editor.png)
+<p align="center">
+  <strong>A native workspace for your databases.</strong><br>
+  Explore schemas, write queries and edit data in a focused desktop app built with Rust and egui.<br>
+  macOS · Windows
+</p>
 
-- **Engines:** PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, Snowflake and SQLite. Oracle needs the
-  [Oracle Instant Client](https://www.oracle.com/database/technologies/instant-client.html) installed.
-  Snowflake speaks the JDBC driver's REST protocol natively (no Java): password, key-pair (the
-  `private_key_file` driver property, as in DataGrip), OAuth or programmatic access token authentication,
-  with role, database, schema and warehouse per data source.
-- **NoSQL:** Redis / Valkey and MongoDB. Their consoles take the engine's own commands: one Redis command per line
-  (`HGETALL user:1`, `SCAN 0 MATCH user:*`…) or `mongosh` commands (`db.users.find({age: {$gt: 30}}).sort({name: 1})`,
-  `aggregate`, `insertOne`, `updateMany`, `runCommand`, `show collections`…). The explorer shows Redis keys grouped by
-  prefix, with each key's type, TTL and value, and MongoDB collections with the fields of a sample of their documents.
-  Their grid is read-only, and read-only data sources only allow commands that read.
-- **Database Explorer:** every database on the server (loaded on expand), schemas, tables, views, columns and primary keys.
-- **Object browser:** click a database, schema, tables or views folder to browse its objects in a [list or grid](docs/object-browser.md), with a selection information pane on the right.
-- **Navigation and organization:** [find loaded cells or search all tables](docs/navigation-search.md), organize objects with local groups/colors, and close tabs in bulk. Keyboard navigation keeps the active cell visible in wide tables.
-Shortcuts are written with ⌘ / ⌥ (macOS); on Windows use Ctrl / Alt.
+<p align="center">
+  <a href="LICENSE-MIT"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-22a8b8?style=flat-square"></a>
+  <img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-Rust-253b53?style=flat-square&logo=rust">
+  <a href="https://github.com/javy-fernandez/datacraft/releases"><img alt="Download for macOS and Windows" src="https://img.shields.io/badge/download-macOS%20%C2%B7%20Windows-22a8b8?style=flat-square"></a>
+</p>
 
-- **SQL consoles:** highlighting, autocompletion, ⌘↩ (statement under the cursor or selection) and ⌘⇧↩ (everything; `GO` batches on SQL Server). Each console runs against the database you pick.
-  Reformat code (⌥⌘L), comment lines (⌘/), duplicate / delete line, find and replace, query history (⌥⌘E),
-  explain plan (⇧⌘E) and cancel the running query.
-- **Table data editor:** WHERE / ORDER BY filters, per-column value and text filters, in-place editing (update, insert, delete, clone rows) with a preview of the generated SQL, saved in a single transaction. Record view (⇧↩).
-  [Keyboard navigation and multi-cell editing](docs/table-editor.md) include arrow keys, Shift/Ctrl selections, column selection, clipboard matrices, Tab, Ctrl+Enter, Ctrl+N and Ctrl+Delete, with optional **Save on row change** (off by default).
-- **Database objects:** create (with character set and collation, or owner, encoding, template and locale on PostgreSQL), rename, truncate and drop databases and tables; import CSV / TSV files into a table; copy a table (all rows, a percentage or a `WHERE` filter) to another connection, database or schema, creating it there with the types translated between engines, and mask personal data per column on the way (fake name, email or phone, hash, keep the last 4, NULL), always the same masked value for the same real one. It can also bring the related rows through the foreign keys (a customer with its orders, their lines and products), inserted in an order that keeps the keys valid.
-- **Views:** create and edit views from a dialog (name, schema, the `SELECT` in a highlighted editor and the engine's options: `OR REPLACE`, SQL Server `OR ALTER`, Oracle `FORCE`, MySQL `ALGORITHM` / `SQL SECURITY`), with the definition read from the server and a preview of the statements; renaming one replaces it. "Generate DDL" of a view shows its real definition.
-- **Modify Table…:** rename the table; add, drop, rename and retype columns, change NOT NULL, defaults and the primary key; add and drop indexes. The ALTER TABLE statements for each engine are shown first, with a warning for changes that can lose data (on SQLite, changes it can't make in place rebuild the table in one transaction).
-- **Users and privileges:** a "Users" (MySQL / MariaDB) or "Roles" (PostgreSQL) folder under each connection. Create, edit and drop users: password, host, authentication plugin, account lock and resource limits, global and per-database privileges; PostgreSQL role attributes, memberships and privileges on databases, schemas and tables. The editor previews the `CREATE` / `ALTER` / `GRANT` / `REVOKE` statements it will run, with the password masked. Inspired by the user editor of [DBCraft](https://github.com/DarkSoe/DBCraft) by DarkSoe.
-- **Read-only data sources:** only queries run; editing and DDL are disabled.
-- **Export:** results to CSV, TSV, JSON, SQL `INSERT`s or Markdown, to the clipboard or a file, optionally with masked columns (the same rules as the table copy).
-- **Zoom:** IDE zoom (⌘+ / ⌘− / ⌘0) and editor font size (⌥⌘+ / ⌥⌘−).
-- **Native macOS menu bar** with the usual shortcuts (on Windows, the same keyboard shortcuts).
-- **Languages:** English, Spanish, French, Portuguese (Brazil), German, Polish, Simplified Chinese and Japanese; follows the system language and can be changed in Settings. Translations live in `locales/<code>.json` (one file per language, keyed by the English text), so adding or fixing one needs no Rust.
-- **Passwords:** stored in the macOS Keychain or the Windows Credential Manager, never in the connections file.
+<p align="center">
+  <a href="#download">Download</a> ·
+  <a href="#highlights">Highlights</a> ·
+  <a href="#supported-databases">Databases</a> ·
+  <a href="#build-from-source">Build</a> ·
+  <a href="#documentation">Documentation</a> ·
+  <a href="#contributing">Contribute</a>
+</p>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/readme/workspace-light.png">
+    <img src="docs/screenshots/readme/workspace-dark.png" alt="The complete DataCraft window with its unified header, database explorer, orders grid and table inspector" width="100%">
+  </picture>
+  <br>
+  <sub>The table workspace, with navigation, editing tools and object information in one view. Light and dark themes are included.</sub>
+</p>
+
+Screenshots show the current source build on Windows with synthetic data. Every capture includes the complete application window and its custom header. Published releases may not yet include all changes shown here.
+
+## Highlights
+
+| Explore | Query and edit | Manage |
+| --- | --- | --- |
+| Browse databases in a compact list or grid. Inspect tables, columns and records without losing your place. | Write SQL with completion, navigate cells with the keyboard and review pending changes before submitting them. | Organize objects with folders and colors, move data between databases and run engine-specific backups. |
+
+DataCraft starts on an empty **Objects** workspace. Saved query and table tabs remain available, and selecting a database opens its objects. Layout choices and **Save on row change** are remembered between sessions.
+
+## Browse with context
+
+The Database Explorer loads databases and schemas as you expand them. Object folders start collapsed, so large connections stay manageable.
+
+Use **List** for catalog statistics or **Grid** for compact names arranged from top to bottom. Select an object to inspect its columns, storage information and engine-provided timestamps. Unavailable metadata is shown explicitly; exact row counts are fetched on request.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/readme/objects-list.png" alt="Full DataCraft window with the object list, catalog statistics and table inspector"></td>
+    <td width="50%"><img src="docs/screenshots/readme/objects-grid.png" alt="Full DataCraft window with compact object columns, colored folders and the inspector"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>List: compare catalog information.</sub></td>
+    <td align="center"><sub>Grid: scan names and organize related objects.</sub></td>
+  </tr>
+</table>
+
+- Select multiple objects with Shift, Ctrl/Command or a mouse rectangle. Drag them into local groups and assign colors to tables or folders.
+- Use **Find in Schema…** to search accessible SQL tables across a selected database or schema.
+- Close tabs individually, to either side, or in bulk from their context menu.
+
+Groups and colors are local preferences; they do not change the database. See [object browsing](docs/object-browser.md) and [navigation, search and organization](docs/navigation-search.md).
+
+## Write queries, keep the results close
+
+SQL consoles provide syntax highlighting, completion, formatting, find and replace, query history, execution plans and cancellation. Run the current statement, a selection or the entire script. SQL Server scripts support <code>GO</code> batches.
+
+<p align="center">
+  <img src="docs/screenshots/readme/sql-console.png" alt="Full DataCraft window with a highlighted SQL query and its result grid" width="100%">
+  <br>
+  <sub>A query and its results, with the active database visible in the workspace.</sub>
+</p>
+
+Redis/Valkey and MongoDB consoles use their own commands, including <code>HGETALL user:1</code> and <code>db.orders.find({total: {$gte: 100}})</code>. Their result grids are read-only.
+
+## Edit data with clear feedback
+
+Navigate with arrow keys and Tab; the grid scrolls to keep the active cell visible. Extend selections with Shift, select a column by its name, paste clipboard matrices or fill selected cells with one value.
+
+Pending edits have a distinct highlight. Updates, inserted rows and deletions can be reviewed as generated SQL and submitted in one transaction. **Save on row change** is optional and disabled by default; for a bulk edit, it submits when you leave the edited row range.
+
+<p align="center">
+  <img src="docs/screenshots/readme/cell-editor.png" alt="Full DataCraft window with a multiline cell editor below the grid and the selected record in the right inspector" width="100%">
+  <br>
+  <sub>Edit longer values below the grid and inspect the selected record alongside it.</sub>
+</p>
+
+The cell editor supports multiline text and a UTF-8 hex view. The inspector switches between table information, the selected column and the current record. Read-only connections disable editing and DDL.
+
+[Table editing and shortcuts →](docs/table-editor.md)
+
+## Build filters before applying them
+
+Combine enabled conditions in nested **AND/OR** groups, choose comparison or text operators, and add ordered sort columns. Switch to **Text** mode for custom <code>WHERE</code> and <code>ORDER BY</code> expressions. Editing the draft does not run a query; **Apply** reloads the data.
+
+<p align="center">
+  <img src="docs/screenshots/readme/filter-sort.png" alt="Full DataCraft window with the structured filter and sort builder above the table" width="100%">
+  <br>
+  <sub>A filter draft and sort rule, ready to apply.</sub>
+</p>
+
+Ctrl+F, or Command+F on macOS, searches the currently loaded cells. **Find in Schema…** searches the database instead. See [search behavior and scope](docs/navigation-search.md).
+
+## Move, export and back up data
+
+- **Import and export:** import CSV/TSV into tables; export results as CSV, TSV, JSON, SQL inserts or Markdown.
+- **Copy tables:** transfer selected data between connections, databases or schemas, translate column types between engines and optionally include related rows through foreign keys.
+- **Mask values:** apply consistent per-column masking during table copies or exports.
+- **Manage objects:** create and modify tables and views, review generated DDL, and manage MySQL/MariaDB users or PostgreSQL roles and privileges.
+- **Back up databases:** open **Back up database…** from the Database Explorer, review engine-specific options and choose a destination. Jobs run in the background with cancellation and local history.
+
+<p align="center">
+  <img src="docs/screenshots/readme/database-backup.png" alt="Full DataCraft window with the MariaDB backup dialog and its destination, utility and compression settings" width="100%">
+  <br>
+  <sub>Backup settings in context. Available modes and destination rules depend on the engine.</sub>
+</p>
+
+PostgreSQL, MySQL and MariaDB backups require their native dump utilities. SQLite uses its online backup API. SQL Server, Oracle and Snowflake use server-side backup or export facilities with engine-specific privileges and destinations. See [backup modes, prerequisites and limitations](docs/database-backups.md).
+
+## Supported databases
+
+| Database | Connection and workspace |
+| --- | --- |
+| PostgreSQL | SQL console, data editor, schemas, views, roles and logical backups |
+| MySQL / MariaDB | SQL console, data editor, views, users and logical backups |
+| SQL Server | SQL console with <code>GO</code> batches, data editor, object management and native backups |
+| Oracle | SQL console, data editor, object management and Data Pump exports; requires Oracle Instant Client |
+| Snowflake | Native REST connection without Java; password, key-pair, OAuth or programmatic access token authentication |
+| SQLite | Local database files, SQL console, data editor and online backups |
+| Redis / Valkey | Native commands, keys grouped by prefix, type/TTL information and read-only result grids |
+| MongoDB | <code>mongosh</code>-style commands, collection browsing and read-only result grids |
+
+Support varies by engine, server version and account privileges. [Oracle Instant Client](https://www.oracle.com/database/technologies/instant-client.html) must be installed separately for Oracle connections.
+
+## Designed for the desktop
+
+- **macOS and Windows:** native macOS menus and window controls; a unified application header on Windows.
+- **Light and dark themes:** adjustable interface zoom and editor font size.
+- **Eight interface languages:** English, Spanish, French, Brazilian Portuguese, German, Polish, Simplified Chinese and Japanese. Follow the system language or choose one in Settings.
+- **OS credential storage:** saved passwords use macOS Keychain or Windows Credential Manager, rather than the connections file.
+
+Built with Rust, egui/wgpu and Tokio. Database work runs through background workers to keep the interface responsive.
 
 ## Download
 
-Get the latest version from [Releases](https://github.com/javy-fernandez/datacraft/releases):
+Get packaged builds from the official [GitHub Releases](https://github.com/javy-fernandez/datacraft/releases).
 
-- **macOS:** `DataCraft-<version>-universal.dmg` (Apple Silicon and Intel, macOS 11+). Open it and drag
-  DataCraft to Applications. The app is not notarized: the first time, right-click DataCraft.app → **Open**,
-  or run `xattr -dr com.apple.quarantine /Applications/DataCraft.app`.
-- **Windows:** `DataCraft-<version>-windows-x64.zip` (Windows 10/11, x64) or `DataCraft-<version>-windows-arm64.zip`
-  (Windows on ARM: Snapdragon / Copilot+ PCs). Unzip it and run `DataCraft.exe`;
-  no installer needed. The exe is not signed, so SmartScreen may warn the first time: **More info → Run anyway**.
+| Platform | Package | Install |
+| --- | --- | --- |
+| macOS 11+ · Apple Silicon and Intel | <code>DataCraft-&lt;version&gt;-universal.dmg</code> | Open the disk image and move DataCraft to Applications. |
+| Windows 10/11 · x64 | <code>DataCraft-&lt;version&gt;-windows-x64.zip</code> | Extract the archive and run <code>DataCraft.exe</code>. |
+| Windows on ARM · ARM64 | <code>DataCraft-&lt;version&gt;-windows-arm64.zip</code> | Extract the archive and run <code>DataCraft.exe</code>. |
 
-## Build
+The macOS app is not notarized and Windows executables are unsigned, so the operating system may show a first-launch warning. Check the release notes for the build you download.
 
-```bash
-cargo run                                  # development
-scripts/bundle.sh --install                # optimized DataCraft.app in /Applications
-scripts/bundle.sh --universal --dmg        # universal app + .dmg (needs: rustup target add x86_64-apple-darwin)
-cargo build --release --target x86_64-pc-windows-gnu   # Windows .exe from macOS (needs: rustup target add x86_64-pc-windows-gnu, brew install mingw-w64)
-cargo xwin build --release --target aarch64-pc-windows-msvc   # Windows ARM64 .exe (needs: rustup target add aarch64-pc-windows-msvc, cargo install cargo-xwin, brew install llvm lld; downloads the Windows SDK and accepts Microsoft's license)
-```
+## Build from source
 
-On Windows itself, `cargo build --release` produces `target\release\datacraft.exe`.
+Use a Rust toolchain with support for the 2024 edition and the native build tools for your platform.
 
-### Code signing (optional)
+~~~sh
+git clone https://github.com/javy-fernandez/datacraft.git
+cd datacraft
+cargo run --locked
+~~~
 
-`bundle.sh` signs the app with a certificate named **DataCraft** if it exists (or the one in
-`DATACRAFT_SIGN_IDENTITY`). With a stable certificate the Keychain recognizes every new build
-as the same app and doesn't ask again for access to the saved passwords; without it the app is
-signed ad hoc and macOS asks after every install.
+For an optimized Windows executable:
 
-To create it: open **Keychain Access → Certificate Assistant → Create a Certificate…**, name it
-`DataCraft`, choose *Identity Type: Self-Signed Root* and *Certificate Type: Code Signing*, and
-create it in the *login* keychain.
+~~~sh
+cargo build --locked --release
+~~~
 
-## Tests
+The output is <code>target/release/datacraft.exe</code>. Native MSVC builds require the Visual Studio C++ build tools and Windows SDK, including the resource compiler used to embed the application icon.
 
-```bash
-cargo test
-scripts/test_mssql.sh <host>   # real SQL Server (non-destructive: only #temp tables), asks for the password
-```
+On macOS:
 
-The live tests run with `cargo test -- --ignored` and the `DATACRAFT_PG_*`, `DATACRAFT_MY_*`,
-`DATACRAFT_ORA_*` and `DATACRAFT_SF_*` variables (see `src/db/postgres.rs`, `src/db/mysql.rs`,
-`src/db/oracle.rs` and `src/db/snowflake.rs`), and `DATACRAFT_REDIS_PORT` / `DATACRAFT_MONGO_PORT`
-for a local Redis or Valkey and MongoDB (see `src/worker.rs`).
+~~~sh
+scripts/bundle.sh --install
+scripts/bundle.sh --universal --dmg
+~~~
 
-Demo mode for screenshots: `DATACRAFT_DEMO=path.db cargo run` (see the header of `src/app.rs`).
+The universal build requires both Apple Silicon and Intel Rust targets. The bundle script uses <code>DATACRAFT_SIGN_IDENTITY</code>, or a certificate named <code>DataCraft</code>, when available; otherwise it uses ad hoc signing. A stable signing identity helps preserve Keychain access between builds.
+
+<details>
+<summary>Cross-compile Windows builds from macOS</summary>
+
+For x64, install the GNU Windows target and MinGW-w64:
+
+~~~sh
+rustup target add x86_64-pc-windows-gnu
+brew install mingw-w64
+cargo build --locked --release --target x86_64-pc-windows-gnu
+~~~
+
+For ARM64, use cargo-xwin with LLVM and LLD:
+
+~~~sh
+rustup target add aarch64-pc-windows-msvc
+cargo install cargo-xwin
+brew install llvm lld
+cargo xwin build --locked --release --target aarch64-pc-windows-msvc
+~~~
+
+cargo-xwin downloads the Windows SDK and requires acceptance of Microsoft's license.
+
+</details>
+
+## Documentation
+
+| Guide | Contents |
+| --- | --- |
+| [Database workspace](docs/database-workspace.md) | Inspectors, cell editor, structured filters and pagination |
+| [Object browser](docs/object-browser.md) | List/grid layouts, object metadata and row-count semantics |
+| [Table editor](docs/table-editor.md) | Keyboard navigation, selections, bulk edits and optional automatic saving |
+| [Navigation and search](docs/navigation-search.md) | Table search, schema search, local groups/colors and tab management |
+| [Database backups](docs/database-backups.md) | Engine support, native utilities, destinations and cancellation |
+| [Application icon](docs/application-icon.md) | Shared artwork and native Windows/macOS icon assets |
+| [Window header](docs/window-chrome.md) | Platform-specific window controls and validation notes |
+| [Screenshots](docs/screenshots/readme/README.md) | Reproduce the full-window documentation captures |
+
+## Contributing
+
+Bug reports, focused pull requests and translation improvements are welcome. Include your operating system, database engine/version and steps to reproduce the issue. Use synthetic data in screenshots and examples.
+
+Run the relevant checks before submitting a change:
+
+~~~sh
+cargo test --locked --all-targets
+cargo clippy --locked --all-targets -- -D warnings
+cargo fmt --all -- --check
+~~~
+
+Live integration tests require separately configured database services. Run only the relevant ignored tests against a disposable environment; do not run the entire ignored suite against personal or production databases.
+
+Translations live in <code>locales/&lt;code&gt;.json</code>, keyed by their English labels. The MySQL/MariaDB and PostgreSQL user editors were inspired by [DBCraft](https://github.com/DarkSoe/DBCraft) by DarkSoe.
 
 ## License
 
-DataCraft is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
-Bundled fonts keep their own open license (SIL OFL 1.1); see [assets/fonts/README.md](assets/fonts/README.md).
-
-## Español
-
-Cliente de bases de datos para macOS y Windows al estilo de DataGrip (tema Islands), escrito en Rust con egui.
-
-- **Motores:** PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, Snowflake y SQLite. Oracle requiere tener instalado el
-  [Oracle Instant Client](https://www.oracle.com/database/technologies/instant-client.html).
-  Snowflake usa directamente el protocolo REST del driver JDBC (sin Java): autenticación por contraseña, par de
-  claves (la propiedad `private_key_file` del controlador, como en DataGrip), OAuth o token de acceso
-  programático, con rol, base de datos, esquema y almacén por fuente de datos.
-- **NoSQL:** Redis / Valkey y MongoDB. Sus consolas aceptan los comandos propios de cada motor: un comando de Redis por línea
-  (`HGETALL user:1`, `SCAN 0 MATCH user:*`…) o comandos de `mongosh` (`db.users.find({age: {$gt: 30}}).sort({name: 1})`,
-  `aggregate`, `insertOne`, `updateMany`, `runCommand`, `show collections`…). El explorador muestra las claves de Redis
-  agrupadas por prefijo, con el tipo, el TTL y el valor de cada una, y las colecciones de MongoDB con los campos de una
-  muestra de sus documentos. Su cuadrícula es de solo lectura, y en las fuentes de datos de solo lectura solo se permiten comandos que leen.
-- **Database Explorer:** todas las bases del servidor (se cargan al expandirlas), esquemas, tablas, vistas, columnas y claves primarias.
-- **Explorador de objetos:** haz clic en una base, esquema o carpeta de tablas/vistas para ver sus objetos en [lista o cuadrícula](docs/object-browser.md), con información de la selección a la derecha.
-- **Navegación y organización:** [busca en las celdas cargadas o en todas las tablas](docs/navigation-search.md), organiza objetos con grupos y colores locales y cierra pestañas en bloque. La navegación por teclado mantiene visible la celda activa en tablas anchas.
-Los atajos se indican con ⌘ / ⌥ (macOS); en Windows son Ctrl / Alt.
-
-- **Consolas SQL:** resaltado, autocompletado, ⌘↩ (sentencia bajo el cursor o selección) y ⌘⇧↩ (todo; lotes `GO` en SQL Server). Cada consola ejecuta en la base que elijas.
-  Formatear código (⌥⌘L), comentar líneas (⌘/), duplicar / borrar línea, buscar y reemplazar, historial de consultas (⌥⌘E),
-  plan de ejecución (⇧⌘E) y cancelar la consulta en curso.
-- **Editor de datos de tabla:** filtros WHERE / ORDER BY, filtros de valores y de texto por columna, edición en el sitio (modificar, insertar, borrar y clonar filas) con vista previa del SQL generado, que se guarda en una sola transacción. Vista de registro (⇧↩).
-  La [navegación y edición de varias celdas](docs/table-editor.md) incluye flechas, selecciones con Shift/Ctrl, selección de columnas, matrices del portapapeles, Tab, Ctrl+Enter, Ctrl+N y Ctrl+Supr, con **Guardar al cambiar de fila** opcional (desactivado por defecto).
-- **Objetos de la base:** crear (con juego de caracteres y collation, o propietario, codificación, plantilla y locale en PostgreSQL), renombrar, vaciar y eliminar bases de datos y tablas; importar ficheros CSV / TSV a una tabla; copiar una tabla (todas las filas, un porcentaje o un filtro `WHERE`) a otra conexión, base de datos o esquema, creándola allí con los tipos traducidos entre motores, y enmascarar datos personales por columna al copiar (nombre, email o teléfono falsos, hash, dejar los 4 últimos, NULL), siempre con el mismo valor enmascarado para el mismo valor real. También puede arrastrar las filas relacionadas por las claves foráneas (un cliente con sus pedidos, sus líneas y productos), insertadas en un orden que mantiene válidas las claves.
-- **Vistas:** crear y editar vistas desde un diálogo (nombre, esquema, el `SELECT` en un editor con resaltado y las opciones del motor: `OR REPLACE`, `OR ALTER` en SQL Server, `FORCE` en Oracle, `ALGORITHM` / `SQL SECURITY` en MySQL), con la definición leída del servidor y vista previa de las sentencias; renombrarla la sustituye. "Generate DDL" de una vista muestra su definición real.
-- **Modificar tabla…:** renombrar la tabla; añadir, eliminar, renombrar y cambiar el tipo de columnas, cambiar NOT NULL, valores por defecto y la clave primaria; añadir y eliminar índices. Antes se muestran las sentencias ALTER TABLE de cada motor, con un aviso para los cambios que pueden perder datos (en SQLite, lo que no se puede cambiar sin más reconstruye la tabla en una sola transacción).
-- **Usuarios y privilegios:** una carpeta "Users" (MySQL / MariaDB) o "Roles" (PostgreSQL) en cada conexión. Crea, edita y elimina usuarios: contraseña, host, plugin de autenticación, bloqueo de cuenta y límites de recursos, privilegios globales y por base de datos; en PostgreSQL, atributos de rol, pertenencias y privilegios sobre bases, esquemas y tablas. El editor muestra antes las sentencias `CREATE` / `ALTER` / `GRANT` / `REVOKE` que ejecutará, con la contraseña oculta. Inspirado en el editor de usuarios de [DBCraft](https://github.com/DarkSoe/DBCraft), de DarkSoe.
-- **Data sources de solo lectura:** solo se ejecutan consultas; la edición y el DDL quedan desactivados.
-- **Exportación:** resultados a CSV, TSV, JSON, `INSERT`s SQL o Markdown, al portapapeles o a un fichero, opcionalmente con columnas enmascaradas (las mismas reglas que la copia de tablas).
-- **Zoom:** zoom del IDE (⌘+ / ⌘− / ⌘0) y tamaño de fuente del editor (⌥⌘+ / ⌥⌘−).
-- **Menú nativo de macOS** con los atajos habituales (en Windows, los mismos atajos de teclado).
-- **Idiomas:** inglés, español, francés, portugués (Brasil), alemán, polaco, chino simplificado y japonés; sigue el idioma del sistema y se puede cambiar en Ajustes. Las traducciones están en `locales/<código>.json` (un fichero por idioma, con el texto en inglés como clave), así que añadir o corregir uno no requiere tocar Rust.
-- **Contraseñas:** se guardan en el Llavero de macOS o en el Administrador de credenciales de Windows, nunca en el fichero de conexiones.
-
-### Descarga
-
-Descarga la última versión desde [Releases](https://github.com/javy-fernandez/datacraft/releases):
-
-- **macOS:** `DataCraft-<versión>-universal.dmg` (Apple Silicon e Intel, macOS 11+). Ábrelo y arrastra
-  DataCraft a Aplicaciones. La app no está notarizada: la primera vez, clic derecho en DataCraft.app → **Abrir**,
-  o ejecuta `xattr -dr com.apple.quarantine /Applications/DataCraft.app`.
-- **Windows:** `DataCraft-<versión>-windows-x64.zip` (Windows 10/11, x64) o `DataCraft-<versión>-windows-arm64.zip`
-  (Windows en ARM: Snapdragon / Copilot+ PC). Descomprímelo y ejecuta `DataCraft.exe`;
-  no necesita instalación. El exe no está firmado y SmartScreen puede avisar la primera vez: **Más información → Ejecutar de todas formas**.
-
-### Compilar
-
-```bash
-cargo run                                  # desarrollo
-scripts/bundle.sh --install                # DataCraft.app optimizada en /Applications
-scripts/bundle.sh --universal --dmg        # app universal + .dmg (requiere: rustup target add x86_64-apple-darwin)
-cargo build --release --target x86_64-pc-windows-gnu   # .exe de Windows desde macOS (requiere: rustup target add x86_64-pc-windows-gnu, brew install mingw-w64)
-cargo xwin build --release --target aarch64-pc-windows-msvc   # .exe de Windows ARM64 (requiere: rustup target add aarch64-pc-windows-msvc, cargo install cargo-xwin, brew install llvm lld; descarga el SDK de Windows y acepta la licencia de Microsoft)
-```
-
-En el propio Windows, `cargo build --release` genera `target\release\datacraft.exe`.
-
-**Firma (opcional):** `bundle.sh` firma la app con un certificado llamado **DataCraft** si existe
-(o con el de `DATACRAFT_SIGN_IDENTITY`). Con un certificado estable el Llavero reconoce cada
-compilación nueva como la misma app y no vuelve a pedir acceso a las contraseñas guardadas; sin
-él la firma es ad hoc y macOS lo pide tras cada instalación.
-
-Para crearlo: abre **Acceso a Llaveros → Asistente de certificados → Crear un certificado…**,
-llámalo `DataCraft`, elige *Tipo de identidad: Raíz autofirmada* y *Tipo de certificado: Firma de
-código*, y créalo en el llavero *inicio de sesión*.
-
-### Tests
-
-```bash
-cargo test
-scripts/test_mssql.sh <host>   # SQL Server real (no destructivo: solo tablas #temp), pide la contraseña
-```
-
-Los tests en vivo se ejecutan con `cargo test -- --ignored` y las variables `DATACRAFT_PG_*`,
-`DATACRAFT_MY_*`, `DATACRAFT_ORA_*` y `DATACRAFT_SF_*` (ver `src/db/postgres.rs`, `src/db/mysql.rs`,
-`src/db/oracle.rs` y `src/db/snowflake.rs`), y `DATACRAFT_REDIS_PORT` / `DATACRAFT_MONGO_PORT`
-para un Redis o Valkey y un MongoDB locales (ver `src/worker.rs`).
-
-Modo demo para capturas: `DATACRAFT_DEMO=ruta.db cargo run` (ver la cabecera de `src/app.rs`).
-
-### Licencia
-
-DataCraft tiene doble licencia [MIT](LICENSE-MIT) o [Apache-2.0](LICENSE-APACHE), a tu elección.
-Las fuentes incluidas mantienen su propia licencia abierta (SIL OFL 1.1); ver [assets/fonts/README.md](assets/fonts/README.md).
+DataCraft is available under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option. Bundled fonts retain their own SIL Open Font License 1.1; see the [font notices](assets/fonts/README.md).

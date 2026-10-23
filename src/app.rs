@@ -64,6 +64,9 @@ use std::time::Instant;
 
 mod views;
 
+#[cfg(all(test, target_os = "windows"))]
+mod readme_screenshots;
+
 const STORAGE_KEY: &str = "datacraft_ui_state";
 const DEFAULT_FONT_SIZE: f32 = 13.0;
 
@@ -3908,7 +3911,7 @@ impl eframe::App for DataCraftApp {
 mod tests {
     use super::*;
 
-    fn tabs_app() -> DataCraftApp {
+    pub(super) fn tabs_app() -> DataCraftApp {
         DataCraftApp {
             worker: Worker::start(egui::Context::default()), conns: Vec::new(),
             consoles: (1..=4).map(|id| Console::new(id, format!("Query {id}"), String::new(), None)).collect(),
