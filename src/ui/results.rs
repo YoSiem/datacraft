@@ -2697,6 +2697,7 @@ mod keyboard_tests {
                         dark: true,
                         font_size: 14.0,
                         columns: None,
+                        auto_complete: true,
                     };
                     for action in state.console.show_table(ui, &cx) {
                         if let ConsoleAction::Submit(i) = action {

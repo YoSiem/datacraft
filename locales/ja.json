@@ -87,6 +87,7 @@
     "Lightweight SQL client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle and SQLite.": "PostgreSQL、MySQL、MariaDB、SQL Server、Oracle、SQLite 向けの軽量 SQL クライアント。",
     "Made with Rust, egui and tokio": "Rust、egui、tokio で作成",
     "Max rows per query:": "クエリあたりの最大行数:",
+    "Show completions while typing": "入力中に補完候補を表示",
     "Copy SQL": "SQL をコピー",
     "Saving…": "保存中…",
     "Table “{name}” created": "テーブル「{name}」を作成しました",

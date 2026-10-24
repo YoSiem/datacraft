@@ -87,6 +87,7 @@
     "Lightweight SQL client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle and SQLite.": "Schlanker SQL-Client für PostgreSQL, MySQL, MariaDB, SQL Server, Oracle und SQLite.",
     "Made with Rust, egui and tokio": "Entwickelt mit Rust, egui und tokio",
     "Max rows per query:": "Max. Zeilen pro Abfrage:",
+    "Show completions while typing": "Vorschläge beim Tippen anzeigen",
     "Copy SQL": "SQL kopieren",
     "Saving…": "Wird gespeichert…",
     "Table “{name}” created": "Tabelle „{name}“ erstellt",
