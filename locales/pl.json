@@ -123,6 +123,8 @@
     "Connecting…": "Łączenie…",
     "Running…": "Wykonywanie…",
     "Transaction mode": "Tryb transakcji",
+    "Tx: Auto": "Trans.: Auto",
+    "Automatic": "Automatyczny",
     "Each statement is committed when run": "Każda instrukcja jest zatwierdzana po wykonaniu",
     "<no connection>": "<brak połączenia>",
     "Console data source and database": "Źródło danych i baza danych konsoli",

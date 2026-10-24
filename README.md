@@ -142,7 +142,7 @@ Support varies by engine, server version and account privileges. [Oracle Instant
 
 - **macOS and Windows:** native macOS menus and window controls; a unified application header on Windows.
 - **Light and dark themes:** adjustable interface zoom and editor font size.
-- **Eight interface languages:** English, Spanish, French, Brazilian Portuguese, German, Polish, Simplified Chinese and Japanese. Follow the system language or choose one in Settings.
+- **Nine interface languages:** English, Spanish, French, Brazilian Portuguese, German, Polish, Simplified Chinese, Japanese and Arabic. Follow the system language or choose one in Settings. Arabic fonts and bidirectional text rendering are included; see [Unicode support and database encoding](docs/internationalization.md).
 - **OS credential storage:** saved passwords use macOS Keychain or Windows Credential Manager, rather than the connections file.
 
 Built with Rust, egui/wgpu and Tokio. Database work runs through background workers to keep the interface responsive.

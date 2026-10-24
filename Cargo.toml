@@ -14,6 +14,8 @@ eframe = { version = "0.36", default-features = false, features = ["default_font
 egui-wgpu = { version = "0.36", default-features = false }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "metal", "wgsl"] }
 egui = "0.36"
+# Render glyphs from system color emoji fonts as well as monochrome outlines.
+epaint = { version = "0.36", features = ["color_fonts"] }
 egui_extras = "0.36"
 futures-util = "0.3.34"
 keyring = { version = "3", features = ["apple-native"] }
@@ -56,6 +58,20 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 lto = "fat"
 codegen-units = 1
 strip = true
+
+# egui 0.36.2 misorders Arabic words and corrupts TextEdit character indices.
+# Pin the bidi/cluster fixes from https://github.com/emilk/egui/pull/8577 until released.
+[patch.crates-io]
+eframe = { git = "https://github.com/abdu-benayad/egui", rev = "c93e8863e958507056415e2a6dace56e23ba5f3a" }
+egui = { git = "https://github.com/abdu-benayad/egui", rev = "c93e8863e958507056415e2a6dace56e23ba5f3a" }
+egui-wgpu = { git = "https://github.com/abdu-benayad/egui", rev = "c93e8863e958507056415e2a6dace56e23ba5f3a" }
+egui-winit = { git = "https://github.com/abdu-benayad/egui", rev = "c93e8863e958507056415e2a6dace56e23ba5f3a" }
+egui_extras = { git = "https://github.com/abdu-benayad/egui", rev = "c93e8863e958507056415e2a6dace56e23ba5f3a" }
+egui_kittest = { git = "https://github.com/abdu-benayad/egui", rev = "c93e8863e958507056415e2a6dace56e23ba5f3a" }
+epaint = { git = "https://github.com/abdu-benayad/egui", rev = "c93e8863e958507056415e2a6dace56e23ba5f3a" }
+emath = { git = "https://github.com/abdu-benayad/egui", rev = "c93e8863e958507056415e2a6dace56e23ba5f3a" }
+ecolor = { git = "https://github.com/abdu-benayad/egui", rev = "c93e8863e958507056415e2a6dace56e23ba5f3a" }
+epaint_default_fonts = { git = "https://github.com/abdu-benayad/egui", rev = "c93e8863e958507056415e2a6dace56e23ba5f3a" }
 
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }

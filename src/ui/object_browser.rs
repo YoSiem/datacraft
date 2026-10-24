@@ -1531,8 +1531,8 @@ mod tests {
         h.run_steps(3);
         h.get_by_label("customers").click_secondary();
         h.run_steps(3);
-        assert!(h.query_by_label("Add to group… ⏵").is_some());
-        assert!(h.query_by_label("Color ⏵").is_some());
+        assert!(h.query_by_label("Add to group…").is_some());
+        assert!(h.query_by_label("Color").is_some());
         assert!(h.query_all_by_label("Open data").next().is_some());
     }
 
@@ -1565,7 +1565,7 @@ mod tests {
     fn color_item(h: &mut egui_kittest::Harness<'_, State>, label: &str, color: &str) {
         h.get_all_by_label(label).last().unwrap().click_secondary();
         h.run_steps(3);
-        h.get_by_label("Color ⏵").click();
+        h.get_by_label("Color").click();
         h.run_steps(2);
         h.get_by_label(color).click();
         h.run_steps(3);
@@ -1661,7 +1661,7 @@ mod tests {
             .unwrap()
             .click_secondary();
         h.run_steps(2);
-        h.get_by_label("Color ⏵").click();
+        h.get_by_label("Color").click();
         h.run_steps(2);
         h.get_by_label("Blue").click();
         h.run_steps(3);
@@ -1686,8 +1686,8 @@ mod tests {
             create_group(&mut h, "Sales");
             h.get_by_label("Sales").click_secondary();
             h.run_steps(3);
-            assert!(h.query_by_label("Color ⏵").is_some());
-            h.get_by_label("Color ⏵").click();
+            assert!(h.query_by_label("Color").is_some());
+            h.get_by_label("Color").click();
             h.run_steps(2);
             h.get_by_label("Red").click();
             h.run_steps(3);
@@ -1709,7 +1709,7 @@ mod tests {
                 .unwrap()
                 .click_secondary();
             h.run_steps(2);
-            h.get_by_label("Color ⏵").click();
+            h.get_by_label("Color").click();
             h.run_steps(2);
             h.get_by_label("Green").click();
             h.run_steps(3);
@@ -1724,7 +1724,7 @@ mod tests {
             );
             h.get_by_label("Sales").click_secondary();
             h.run_steps(2);
-            h.get_by_label("Color ⏵").click();
+            h.get_by_label("Color").click();
             h.run_steps(2);
             h.get_by_label("Default").click();
             h.run_steps(3);
@@ -1897,7 +1897,7 @@ mod tests {
                 h.run_steps(3);
                 h.get_by_label("Sales").click_secondary();
                 h.run_steps(3);
-                h.get_by_label("Color ⏵").click();
+                h.get_by_label("Color").click();
                 h.run_steps(3);
                 h.render()
                     .unwrap()

@@ -25,10 +25,21 @@ pub enum Lang {
     Zh,
     Ja,
     Pl,
+    Ar,
 }
 
 impl Lang {
-    pub const ALL: [Lang; 8] = [Lang::En, Lang::Es, Lang::Fr, Lang::Pt, Lang::De, Lang::Pl, Lang::Zh, Lang::Ja];
+    pub const ALL: [Lang; 9] = [
+        Lang::En,
+        Lang::Es,
+        Lang::Fr,
+        Lang::Pt,
+        Lang::De,
+        Lang::Pl,
+        Lang::Zh,
+        Lang::Ja,
+        Lang::Ar,
+    ];
 
     /// Name of the language written in that language (for the selector).
     pub fn native_name(self) -> &'static str {
@@ -41,6 +52,7 @@ impl Lang {
             Lang::Zh => "简体中文",
             Lang::Ja => "日本語",
             Lang::Pl => "Polski",
+            Lang::Ar => "العربية",
         }
     }
 
@@ -55,6 +67,7 @@ impl Lang {
             Lang::Zh => Some(include_str!("../../locales/zh-Hans.json")),
             Lang::Ja => Some(include_str!("../../locales/ja.json")),
             Lang::Pl => Some(include_str!("../../locales/pl.json")),
+            Lang::Ar => Some(include_str!("../../locales/ar.json")),
         }
     }
 
@@ -74,6 +87,7 @@ impl Lang {
             "zh" => Lang::Zh,
             "ja" => Lang::Ja,
             "pl" => Lang::Pl,
+            "ar" => Lang::Ar,
             _ => Lang::En,
         }
     }
@@ -301,6 +315,10 @@ mod tests {
             ("zh-TW", Lang::Zh),
             ("ja-JP", Lang::Ja),
             ("pl-PL", Lang::Pl),
+            ("ar-SA", Lang::Ar),
+            ("ar_AE", Lang::Ar),
+            ("AR-EG", Lang::Ar),
+            ("ar", Lang::Ar),
             ("en-US", Lang::En),
             ("ko-KR", Lang::En),
             ("", Lang::En),
@@ -313,5 +331,15 @@ mod tests {
     fn falls_back_to_english() {
         // Tests never change the global language, so it is the default (English) here.
         assert_eq!(trf("{a} of {b} (untranslated)", &[("a", &1), ("b", &"x")]), "1 of x (untranslated)");
+    }
+
+    #[test]
+    fn arabic_is_translated_and_persisted() {
+        assert_eq!(table(Lang::Ar).get("Language"), Some(&"اللغة"));
+        assert_eq!(table(Lang::Ar).get("Save"), Some(&"حفظ"));
+        assert_eq!(
+            serde_json::from_str::<Lang>(&serde_json::to_string(&Lang::Ar).unwrap()).unwrap(),
+            Lang::Ar
+        );
     }
 }

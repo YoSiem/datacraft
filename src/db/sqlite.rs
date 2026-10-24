@@ -236,6 +236,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unicode_survives_grid_edits_and_reopening() {
+        use crate::edit::{Change, change_sql};
+
+        let db = TempDb::new("unicode");
+        let mut s = db.open().await;
+        s.execute(
+            "CREATE TABLE \"بيانات\" (id INTEGER PRIMARY KEY, \"نص\" TEXT)",
+            10,
+        )
+        .await
+        .unwrap();
+        let original =
+            "مَرْحَبًا بالعالم — العربية 中文 日本語 한국어 ไทย हिन्दी עברית 🦀 𠮷 e\u{301} 'quoted'";
+        let insert = Change::Insert {
+            values: vec![
+                ("id".into(), Some("1".into())),
+                ("نص".into(), Some(original.into())),
+            ],
+        };
+        s.apply_changes(&[change_sql(Driver::Sqlite, "main", "بيانات", &insert)])
+            .await
+            .unwrap();
+        let rs = s
+            .execute("SELECT \"نص\" FROM \"بيانات\"", 10)
+            .await
+            .unwrap();
+        assert_eq!(rs[0].columns, ["نص"]);
+        assert_eq!(rs[0].rows, [vec![Some(original.into())]]);
+
+        let updated = format!("{original}\nالسعودية 🇸🇦");
+        let update = Change::Update {
+            key: vec![("id".into(), Some("1".into()))],
+            set: vec![("نص".into(), Some(updated.clone()))],
+        };
+        s.apply_changes(&[change_sql(Driver::Sqlite, "main", "بيانات", &update)])
+            .await
+            .unwrap();
+        drop(s);
+        let mut reopened = db.open().await;
+        let rs = reopened
+            .execute("SELECT \"نص\" FROM \"بيانات\"", 10)
+            .await
+            .unwrap();
+        assert_eq!(rs[0].rows, [vec![Some(updated)]]);
+        let schema = reopened.introspect().await.unwrap();
+        assert_eq!(schema[0].tables[0].name, "بيانات");
+        assert_eq!(schema[0].tables[0].columns[1].name, "نص");
+    }
+
+    #[tokio::test]
     async fn apply_changes_is_atomic() {
         let db = TempDb::new("apply");
         let mut s = db.open().await;

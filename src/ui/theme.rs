@@ -242,6 +242,20 @@ const SYSTEM_FONTS: &[&[&str]] = &[
     &["%WINDIR%/Fonts/malgun.ttf"],
     // Thai.
     &["%WINDIR%/Fonts/LeelawUI.ttf", "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf"],
+    // Hebrew and other scripts in the Windows UI font.
+    &[
+        "%WINDIR%/Fonts/segoeui.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+    ],
+    // Indic and African scripts on Windows.
+    &["%WINDIR%/Fonts/Nirmala.ttf"],
+    &["%WINDIR%/Fonts/ebrima.ttf"],
+    // Symbols and emoji not covered by egui's bundled fallback fonts.
+    &["%WINDIR%/Fonts/seguisym.ttf"],
+    &[
+        "%WINDIR%/Fonts/seguiemj.ttf",
+        "/System/Library/Fonts/Apple Color Emoji.ttc",
+    ],
 ];
 
 /// The system fallback fonts found, read once per run.
@@ -274,9 +288,17 @@ pub fn install_fonts(ctx: &egui::Context) {
     add(&mut fonts, "JBMono", include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf"));
     add(&mut fonts, "JBMono-Bold", include_bytes!("../../assets/fonts/JetBrainsMono-Bold.ttf"));
     add(&mut fonts, "JBMono-Italic", include_bytes!("../../assets/fonts/JetBrainsMono-Italic.ttf"));
+    add(
+        &mut fonts,
+        "NotoSansArabic",
+        include_bytes!("../../assets/fonts/NotoSansArabic.ttf"),
+    );
 
     let mut fallback_prop = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     let mut fallback_mono = fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
+    // Available in every language, including Arabic values in an English database grid.
+    fallback_prop.insert(0, "NotoSansArabic".into());
+    fallback_mono.insert(0, "NotoSansArabic".into());
     for (name, data) in system_fonts() {
         fonts.font_data.insert(name.clone(), data.clone());
         fallback_prop.push(name.clone());
@@ -652,10 +674,69 @@ pub fn tab(ui: &mut Ui, selected: bool, ico: Option<Ico>, text: &str, closable: 
 mod tests {
     use super::*;
 
+    #[test]
+    fn arabic_glyphs_and_bidirectional_layout_preserve_text() {
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        let mut out = ctx.run_ui(Default::default(), |_| {});
+        out.textures_delta.clear();
+        for family in [
+            FontFamily::Proportional,
+            FontFamily::Monospace,
+            FontFamily::Name(FONT_BOLD.into()),
+            FontFamily::Name(FONT_MONO_BOLD.into()),
+            FontFamily::Name(FONT_MONO_ITALIC.into()),
+        ] {
+            let font = FontId::new(16.0, family);
+            for text in [
+                "العربية",
+                "مَرْحَبًا بِالْعَالَمِ",
+                "عدد 123 مرحبا",
+                "SELECT 'مرحبا' AS name",
+            ] {
+                let galley = ctx.fonts_mut(|f| {
+                    assert!(f.has_glyphs(&font, text), "{text} missing in {font:?}");
+                    f.layout_no_wrap(text.into(), font.clone(), Color32::WHITE)
+                });
+                let row = &galley.rows[0];
+                assert_eq!(
+                    galley.job.text, text,
+                    "source characters changed in {font:?}"
+                );
+                // Combining marks can share a shaped cluster's character metadata.
+                if !text.contains('َ') {
+                    assert_eq!(row.text(), text, "logical characters changed in {font:?}");
+                }
+                assert_eq!(
+                    row.glyphs.len(),
+                    text.chars().count(),
+                    "invalid cursor indices in {font:?}"
+                );
+                if text == "العربية" {
+                    assert!(
+                        row.glyphs[0].pos.x > row.glyphs[6].pos.x,
+                        "Arabic must read right to left"
+                    );
+                }
+                if text == "عدد 123 مرحبا" {
+                    assert!(row.glyphs[4].pos.x < row.glyphs[5].pos.x);
+                    assert!(
+                        row.glyphs[5].pos.x < row.glyphs[6].pos.x,
+                        "digits must read left to right"
+                    );
+                    assert!(
+                        row.glyphs[0].pos.x > row.glyphs[8].pos.x,
+                        "Arabic words must read right to left"
+                    );
+                }
+            }
+        }
+    }
+
     /// Issue #4: CJK, Hangul and Thai in the grid and the UI used to show as boxes.
     #[test]
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    fn system_fonts_cover_cjk_hangul_and_thai() {
+    fn system_fonts_cover_cjk_hangul_thai_and_emoji() {
         assert!(!system_fonts().is_empty(), "no system fallback font found");
         let ctx = egui::Context::default();
         install_fonts(&ctx);
@@ -663,7 +744,7 @@ mod tests {
         out.textures_delta.clear();
         for family in [FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name(FONT_BOLD.into())] {
             let font = FontId::new(13.0, family);
-            for text in ["中文汉字", "日本語のテキスト", "한국어", "ภาษาไทย"] {
+            for text in ["中文汉字", "日本語のテキスト", "한국어", "ภาษาไทย", "🦀"] {
                 assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, text)), "{text} missing in {font:?}");
             }
         }

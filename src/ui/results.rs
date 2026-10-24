@@ -2822,6 +2822,33 @@ mod keyboard_tests {
     }
 
     #[test]
+    fn arabic_inline_edit_keeps_logical_character_positions() {
+        let mut h = harness(false, false);
+        h.state_mut().view.rs.rows[0][1] = Some("عدد 123 مرحبا".into());
+        h.state_mut().view.begin_edit(0, 1);
+        h.run_steps(3);
+        for key in [Key::End, Key::ArrowLeft, Key::ArrowLeft, Key::ArrowLeft] {
+            h.key_press(key);
+            h.run_steps(1);
+        }
+        h.input_mut().events.push(egui::Event::Text("x".into()));
+        h.run_steps(3);
+        h.key_press(Key::Enter);
+        h.run_steps(3);
+        assert_eq!(
+            h.state()
+                .view
+                .display_value(RowRef::Existing(0), 1)
+                .flatten(),
+            Some("عدد 123 مرxحبا".into())
+        );
+        assert_eq!(
+            h.state().view.rs.rows[0][1].as_deref(),
+            Some("عدد 123 مرحبا")
+        );
+    }
+
+    #[test]
     fn text_and_down_are_handled_before_the_editor_has_its_first_focus_frame() {
         let mut h = harness(true, false);
         h.state_mut().view.begin_edit(0, 1);
@@ -3194,5 +3221,23 @@ mod export_tests {
             "INSERT INTO [dbo].[t] (\"id\", \"note\") VALUES ('1', 'a \"b\"\tc|d');\nINSERT INTO [dbo].[t] (\"id\", \"note\") VALUES ('2', NULL);\n"
         );
         assert_eq!(format_rows(&v, ExportFormat::Markdown, ""), "| id | note |\n| --- | --- |\n| 1 | a \"b\"\tc\\|d |\n| 2 |  |\n");
+    }
+
+    #[test]
+    fn unicode_exports_keep_logical_text() {
+        let mut v = view();
+        v.rs.columns = vec!["اسم".into(), "نص".into()];
+        let value = "مَرْحَبًا, 中文 🦀 e\u{301} 'نص'";
+        v.rs.rows = vec![vec![Some("سارة".into()), Some(value.into())]];
+        let csv = format_rows(&v, ExportFormat::Csv, "");
+        let rows = crate::ui::import_dialog::parse_delimited(&csv, ',');
+        assert_eq!(rows, [vec!["اسم", "نص"], vec!["سارة", value]]);
+        let json: serde_json::Value =
+            serde_json::from_str(&format_rows(&v, ExportFormat::Json, "")).unwrap();
+        assert_eq!(json[0]["نص"], value);
+        assert!(
+            format_rows(&v, ExportFormat::SqlInsert, "t")
+                .contains("'مَرْحَبًا, 中文 🦀 e\u{301} ''نص'''")
+        );
     }
 }

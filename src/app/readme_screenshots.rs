@@ -337,3 +337,28 @@ fn render_readme_screenshots() {
         .save(dir.join("database-backup.png"))
         .unwrap();
 }
+
+#[test]
+#[ignore = "Requires a GPU; renders Arabic UI on synthetic data; run alone because the language is global"]
+fn render_arabic_workspace() {
+    i18n::set_lang(Lang::Ar);
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/arabic-snapshots");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut h = harness(false);
+    let view = &mut h.state_mut().consoles[1].results[0];
+    for (index, row) in view.rs.rows.iter_mut().enumerate() {
+        row[1] = Some(format!("عميل {} — الرياض", index + 1));
+        row[2] = Some("مدفوع".into());
+        row[5] = Some("مَرْحَبًا بالعالم — العربية 中文 🦀".into());
+    }
+    h.run_steps(3);
+    assert!(h.query_by_label("محرر الخلية").is_some());
+    h.render().unwrap().save(dir.join("workspace.png")).unwrap();
+    h.get_by_label("محرر الخلية").click();
+    h.run_steps(3);
+    h.render()
+        .unwrap()
+        .save(dir.join("cell-editor.png"))
+        .unwrap();
+    i18n::set_lang(Lang::En);
+}

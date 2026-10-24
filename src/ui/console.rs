@@ -875,12 +875,12 @@ impl Console {
         let mut actions = Vec::new();
         let p = pal(ui);
         if !cx.driver.is_nosql() && self.table.as_ref().is_some_and(|t| t.view.inspector) {
-            egui::Panel::right(egui::Id::new(("table_inspector", self.id))).default_size(280.0).size_range(240.0..=460.0).resizable(true).show(ui, |ui| self.table_inspector(ui, cx, &mut actions));
+            egui::Panel::right(egui::IdSalt::new(("table_inspector", self.id))).default_size(280.0).size_range(240.0..=460.0).resizable(true).show(ui, |ui| self.table_inspector(ui, cx, &mut actions));
         }
-        egui::Panel::bottom(egui::Id::new(("table_footer", self.id))).resizable(false).show_separator_line(true).show(ui, |ui| self.table_footer(ui, cx, &mut actions));
+        egui::Panel::bottom(egui::IdSalt::new(("table_footer", self.id))).resizable(false).show_separator_line(true).show(ui, |ui| self.table_footer(ui, cx, &mut actions));
         if self.table.as_ref().is_some_and(|t| t.view.cell_editor) {
             let busy = self.is_busy();
-            egui::Panel::bottom(egui::Id::new(("cell_editor", self.id))).default_size(150.0).size_range(100.0..=450.0).resizable(true).show(ui, |ui| {
+            egui::Panel::bottom(egui::IdSalt::new(("cell_editor", self.id))).default_size(150.0).size_range(100.0..=450.0).resizable(true).show(ui, |ui| {
                 ui.add_enabled_ui(!busy, |ui| { if let Some(view) = self.results.last_mut() { view.show_cell_editor(ui); } });
             });
         }
@@ -952,10 +952,10 @@ impl Console {
 
     /// "Tx: Auto" dropdown.
     fn tx_dropdown(&self, ui: &mut Ui) {
-        let resp = theme::flat_button(ui, None, "Tx: Auto", FontId::proportional(13.0), true, true)
+        let resp = theme::flat_button(ui, None, tr("Tx: Auto"), FontId::proportional(13.0), true, true)
             .on_hover_text(tr("Transaction mode"));
         egui::Popup::menu(&resp).show(|ui| {
-            let _ = ui.add(egui::Button::new("✓  Auto").frame(false));
+            let _ = ui.add(egui::Button::new(format!("✓  {}", tr("Automatic"))).frame(false));
             ui.add_enabled(false, egui::Button::new(format!("    {}", tr("Manual"))).frame(false));
             ui.separator();
             ui.label(RichText::new(tr("Each statement is committed when run")).small().color(pal(ui).muted));

@@ -123,6 +123,8 @@
     "Connecting…": "接続中…",
     "Running…": "実行中…",
     "Transaction mode": "トランザクションモード",
+    "Tx: Auto": "Tx: 自動",
+    "Automatic": "自動",
     "Each statement is committed when run": "各ステートメントは実行時にコミットされます",
     "<no connection>": "<接続なし>",
     "Console data source and database": "コンソールのデータソースとデータベース",

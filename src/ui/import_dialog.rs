@@ -434,6 +434,27 @@ mod tests {
     }
 
     #[test]
+    fn unicode_csv_preserves_values_and_sql_server_literals() {
+        let rows = parse_delimited("\u{feff}اسم,ملاحظة\nسارة,\"مَرْحَبًا 中文 🦀 'نص'\"\n", ',');
+        assert_eq!(rows[0], ["اسم", "ملاحظة"]);
+        assert_eq!(rows[1], ["سارة", "مَرْحَبًا 中文 🦀 'نص'"]);
+        let sql = insert_statements(
+            Driver::MsSql,
+            "[dbo].[بيانات]",
+            &[col("اسم"), col("ملاحظة")],
+            &[Some(0), Some(1)],
+            &rows[1..],
+            false,
+        );
+        assert_eq!(
+            sql,
+            [
+                "INSERT INTO [dbo].[بيانات] ([اسم], [ملاحظة])\nVALUES (N'سارة', N'مَرْحَبًا 中文 🦀 ''نص''')"
+            ]
+        );
+    }
+
+    #[test]
     fn builds_inserts() {
         let cols = [col("id"), col("name"), col("note")];
         let rows = vec![vec!["1".to_string(), "it's".into()], vec!["2".into(), "".into()]];

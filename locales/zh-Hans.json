@@ -123,6 +123,8 @@
     "Connecting…": "正在连接…",
     "Running…": "正在运行…",
     "Transaction mode": "事务模式",
+    "Tx: Auto": "事务：自动",
+    "Automatic": "自动",
     "Each statement is committed when run": "每条语句在运行时自动提交",
     "<no connection>": "<无连接>",
     "Console data source and database": "控制台的数据源和数据库",

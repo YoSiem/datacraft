@@ -123,6 +123,8 @@
     "Connecting…": "Connexion…",
     "Running…": "Exécution…",
     "Transaction mode": "Mode de transaction",
+    "Tx: Auto": "Tx : Auto",
+    "Automatic": "Automatique",
     "Each statement is committed when run": "Chaque instruction est validée dès son exécution",
     "<no connection>": "<aucune connexion>",
     "Console data source and database": "Source de données et base de la console",

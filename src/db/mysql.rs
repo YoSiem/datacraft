@@ -396,6 +396,9 @@ mod tests {
         let t = |b: &[u8], ty, cs| cell(&Value::Bytes(b.to_vec()), ty, cs);
         assert_eq!(t(b"12.50", ColumnType::MYSQL_TYPE_NEWDECIMAL, BINARY_CHARSET), Some("12.50".into()));
         assert_eq!(t("ñandú €".as_bytes(), ColumnType::MYSQL_TYPE_VAR_STRING, 255), Some("ñandú €".into()));
+        let unicode = "مَرْحَبًا بالعالم 中文 🦀 𠮷 e\u{301}";
+        assert_eq!(t(unicode.as_bytes(), ColumnType::MYSQL_TYPE_VAR_STRING, 45), Some(unicode.into()));
+        assert_eq!(t(unicode.as_bytes(), ColumnType::MYSQL_TYPE_BLOB, 45), Some(unicode.into()));
         assert_eq!(t(b"2026-10-16 12:30:00", ColumnType::MYSQL_TYPE_DATETIME, BINARY_CHARSET), Some("2026-10-16 12:30:00".into()));
         assert_eq!(t(&[0xDE, 0xAD], ColumnType::MYSQL_TYPE_BLOB, BINARY_CHARSET), Some("0xDEAD".into()));
         assert_eq!(t(&[0xDE, 0xAD], ColumnType::MYSQL_TYPE_STRING, BINARY_CHARSET), Some("0xDEAD".into()));
