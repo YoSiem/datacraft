@@ -235,6 +235,8 @@ struct Persisted {
     islands_dark: bool,
     font_size: f32,
     max_rows: usize,
+    /// Completion list opens while typing in the console.
+    auto_complete: bool,
     consoles: Vec<PersistedConsole>,
     active: usize,
     console_counter: u64,
@@ -256,6 +258,7 @@ impl Default for Persisted {
             islands_dark: false,
             font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000,
+            auto_complete: true,
             consoles: Vec::new(),
             active: 0,
             console_counter: 0,
@@ -308,6 +311,7 @@ pub struct DataCraftApp {
     applied_dark: Option<bool>,
     font_size: f32,
     max_rows: usize,
+    auto_complete: bool,
     status_msg: Option<(String, bool)>,
     /// Last connection id handed out (so ids are monotonic).
     last_conn_id: u64,
@@ -388,6 +392,7 @@ impl DataCraftApp {
             applied_dark: None,
             font_size: persisted.font_size.clamp(8.0, 32.0),
             max_rows: persisted.max_rows.max(1),
+            auto_complete: persisted.auto_complete,
             status_msg: None,
             last_conn_id,
             demo_pending: false,
@@ -3080,6 +3085,7 @@ impl DataCraftApp {
                             dark: self.dark,
                             font_size: self.font_size,
                             columns: None,
+                            auto_complete: self.auto_complete,
                         };
                         actions.extend(self.consoles[idx].show_results(ui, &cx));
                     });
@@ -3124,6 +3130,7 @@ impl DataCraftApp {
                 dark: self.dark,
                 font_size: self.font_size,
                 columns,
+                auto_complete: self.auto_complete,
             };
             let console = &mut self.consoles[idx];
             let out = if console.table.is_some() { console.show_table(ui, &cx) } else { console.show_console(ui, &cx) };
@@ -3407,6 +3414,7 @@ impl DataCraftApp {
                     ui.label(tr("Max rows per query:"));
                     ui.add(egui::DragValue::new(&mut self.max_rows).range(1..=1_000_000).speed(10));
                 });
+                ui.checkbox(&mut self.auto_complete, tr("Show completions while typing"));
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| theme::primary_button(ui, tr("Close")).clicked())
                     .inner
@@ -3880,6 +3888,7 @@ impl eframe::App for DataCraftApp {
             islands_dark: self.dark,
             font_size: self.font_size,
             max_rows: self.max_rows,
+            auto_complete: self.auto_complete,
             consoles: self
                 .consoles
                 .iter()
@@ -3921,7 +3930,7 @@ mod tests {
             dialog: None, confirm_delete: None, create: None, drop: None, views: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
             show_about: false, show_settings: false, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
-            max_rows: 1000, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
+            max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
             zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None,
             demo_explorer_w: None, demo_window: None, lang: None,
             modify: None,
