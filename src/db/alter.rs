@@ -943,6 +943,10 @@ fn sqlite_rebuild_sql(d: &TableDetails, edit: &TableEdit, diff: &Diff) -> Result
         let from = copied.iter().map(|(o, _)| q(o)).collect::<Vec<_>>().join(", ");
         out.push(format!("insert into {} ({to}) select {from} from {}", q(&tmp), q(edit.table)));
     }
+    // Since SQLite 3.26 a rename re-checks the views on the schema, and those on the dropped
+    // table fail until the new one has its name; the legacy rename skips that check. Apple's
+    // SQLite has it on already; the bundled one (Windows, Linux) doesn't.
+    out.push("pragma legacy_alter_table = on".into());
     out.push(format!("drop table {}", q(edit.table)));
     out.push(format!("alter table {} rename to {}", q(&tmp), q(&final_name)));
     // Kept indexes, with their columns renamed; those on a dropped column go with it.
@@ -1234,6 +1238,7 @@ mod tests {
                 "create table _dc_new_goods\n(\n    id INTEGER not null,\n    title varchar(100) not null,\n    price INTEGER default 1 not null,\n    \
                  email varchar(255),\n    primary key (id, title)\n)",
                 "insert into _dc_new_goods (id, title, price) select id, name, price from items",
+                "pragma legacy_alter_table = on",
                 "drop table items",
                 "alter table _dc_new_goods rename to goods",
                 "create unique index goods_email on goods (email)",
