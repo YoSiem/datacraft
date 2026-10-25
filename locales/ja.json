@@ -439,7 +439,8 @@
     "The keys changed while saving; nothing was saved. Refresh and try again": "保存中にキーが変更されました。何も保存されていません。更新してもう一度お試しください",
     "The type of a key cannot be changed": "キーの型は変更できません",
     "“{value}” is not a valid TTL (seconds)": "“{value}” は有効な TTL (秒) ではありません",
-    "string (truncated)": "string (切り詰め)"
+    "string (truncated)": "string (切り詰め)",
+    "Up to 1,000,000 rows, inserted in batches of 100 without a transaction (ClickHouse has none): an error or a stop keeps the batches already inserted, and deleting the target's rows first can't be undone.": "最大 1,000,000 行を、トランザクションなしで 100 行ずつのバッチで挿入します（ClickHouse にはトランザクションがありません）。エラーや停止時には挿入済みのバッチが残り、事前に行ったターゲットの行の削除は元に戻せません。"
   },
   "core": {
     "The statement affected {n} rows (expected 1); nothing was saved:\n{stmt}": "ステートメントが {n} 行に影響しました (想定は 1 行)。何も保存されていません:\n{stmt}",
@@ -490,7 +491,8 @@
     "Could not connect to {host}:{port}: {error}": "{host}:{port} に接続できませんでした: {error}",
     "ClickHouse applies UPDATE and DELETE as asynchronous mutations that don't report affected rows; run them from a SQL console": "ClickHouse の UPDATE と DELETE は非同期ミューテーションであり、影響行数を報告しません。SQL コンソールで実行してください",
     "Code {code} ({name}): {message}": "コード {code} ({name}): {message}",
-    "ClickHouse fixes the primary key and indexes when the table is created; change them from a SQL console": "ClickHouse では主キーとインデックスはテーブル作成時に固定されます。SQL コンソールで変更してください"
+    "ClickHouse fixes the primary key and indexes when the table is created; change them from a SQL console": "ClickHouse では主キーとインデックスはテーブル作成時に固定されます。SQL コンソールで変更してください",
+    "“{host}” is not a valid server name for TLS": "「{host}」は TLS の有効なサーバー名ではありません"
   },
   "mysql": {
     "Error {code} (SQLSTATE {state}): {message}": "エラー {code} (SQLSTATE {state}): {message}"

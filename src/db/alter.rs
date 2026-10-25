@@ -283,7 +283,7 @@ pub async fn load_details(s: &mut Session, driver: Driver, schema: &str, table: 
             let rs = query(
                 s,
                 &format!(
-                    "select name, type, startsWith(type, 'Nullable('), default_kind, default_expression, comment, is_in_primary_key \
+                    "select name, type, default_kind, default_expression, comment, is_in_primary_key \
                      from system.columns where database = {sch} and table = {tab} order by position"
                 ),
             )
@@ -294,22 +294,22 @@ pub async fn load_details(s: &mut Session, driver: Driver, schema: &str, table: 
                 .map(|r| {
                     // ALIAS and MATERIALIZED are computed columns (not stored); DEFAULT is a
                     // stored default.
-                    let kind = text(&r[3]);
+                    let kind = text(&r[2]);
                     let generated = matches!(kind.as_str(), "ALIAS" | "MATERIALIZED");
                     ColumnDef {
                         name: text(&r[0]),
+                        nullable: crate::db::clickhouse::is_nullable(&text(&r[1])),
                         data_type: text(&r[1]),
-                        nullable: text(&r[2]) == "1",
-                        default: if kind == "DEFAULT" && !text(&r[4]).is_empty() { Some(text(&r[4])) } else { None },
+                        default: if kind == "DEFAULT" && !text(&r[3]).is_empty() { Some(text(&r[3])) } else { None },
                         extra: if generated { kind } else { String::new() },
-                        comment: text(&r[5]),
+                        comment: text(&r[4]),
                         generated,
                         ..Default::default()
                     }
                 })
                 .collect();
             // Data-skipping indexes are not part of this view (they can't be changed here).
-            d.primary_key = rs.rows.iter().filter(|r| text(&r[6]) == "1").map(|r| text(&r[0])).collect();
+            d.primary_key = rs.rows.iter().filter(|r| text(&r[5]) == "1").map(|r| text(&r[0])).collect();
         }
         Driver::MsSql => {
             let obj = lit(&format!("{}.{}", Driver::MsSql.quote_ident(schema), Driver::MsSql.quote_ident(table)));
@@ -1249,7 +1249,7 @@ mod tests {
                 "alter table db.items rename column name to title",
                 "alter table db.items modify column title LowCardinality(String)",
                 "alter table db.items modify column price UInt64 default 1",
-                "alter table db.items add column email String null",
+                "alter table db.items add column email Nullable(String)",
                 "rename table db.items to db.goods",
             ]
         );

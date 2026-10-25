@@ -4,14 +4,24 @@
 //! does the work and `execute` receives a single statement. Values arrive dynamically typed
 //! and are converted to text here, like in the other drivers.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use futures_util::TryStreamExt;
 use nativeclick::{Client, ClientOptions, NativeclickError, Type, Value};
+use rustls_platform_verifier::ConfigVerifierExt;
+use tokio_rustls::TlsConnector;
+use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use tokio_rustls::rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
+use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use tokio_rustls::rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
 
 use super::{Cell, ColumnInfo, ConnectionConfig, ObjectKind, ResultSet, SchemaInfo, TableInfo};
 use crate::i18n::{tr, trf};
+
+/// The server's secure native port (9000 is the plain one).
+pub const TLS_PORT: u16 = 9440;
 
 pub struct ChSession {
     client: Client,
@@ -28,9 +38,76 @@ fn ch_error(e: &NativeclickError) -> anyhow::Error {
     }
 }
 
+/// A `true`/`1`/`yes`/`on` driver property (`tls`, `tls_insecure`, as for Redis).
+fn property_on(cfg: &ConnectionConfig, name: &str) -> bool {
+    cfg.property(name).is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on"))
+}
+
+pub fn uses_tls(cfg: &ConnectionConfig) -> bool {
+    property_on(cfg, "tls")
+}
+
+/// Certificate check switched off (`tls_insecure`, "Trust server certificate"): any certificate
+/// is accepted, but the handshake signatures are still verified.
+#[derive(Debug)]
+struct AcceptAnyCertificate(Arc<CryptoProvider>);
+
+impl ServerCertVerifier for AcceptAnyCertificate {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, tokio_rustls::rustls::Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+        verify_tls12_signature(message, cert, dss, &self.0.signature_verification_algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+        verify_tls13_signature(message, cert, dss, &self.0.signature_verification_algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.0.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+/// TLS client: certificates checked against the system's trust store (like Snowflake's HTTPS),
+/// unless `insecure`.
+fn tls_connector(insecure: bool) -> anyhow::Result<TlsConnector> {
+    let config = if insecure {
+        let builder = ClientConfig::builder();
+        let verifier = AcceptAnyCertificate(builder.crypto_provider().clone());
+        builder.dangerous().with_custom_certificate_verifier(Arc::new(verifier)).with_no_client_auth()
+    } else {
+        ClientConfig::with_platform_verifier()?
+    };
+    Ok(TlsConnector::from(Arc::new(config)))
+}
+
 async fn connect_client(cfg: &ConnectionConfig) -> anyhow::Result<Client> {
     let host = if cfg.host.trim().is_empty() { "localhost" } else { cfg.host.trim() };
-    let port = if cfg.port == 0 { 9000 } else { cfg.port };
+    let tls = uses_tls(cfg);
+    let port = match cfg.port {
+        0 if tls => TLS_PORT,
+        0 => 9000,
+        p => p,
+    };
     let database =
         if cfg.database.trim().is_empty() { "default".to_string() } else { cfg.database.trim().to_string() };
 
@@ -42,7 +119,15 @@ async fn connect_client(cfg: &ConnectionConfig) -> anyhow::Result<Client> {
         quota_key: String::new(),
         connect_timeout: Some(Duration::from_secs(10)),
     };
-    let client = Client::connect((host, port), options).await.map_err(|e| match e {
+    let connected = if tls {
+        let connector = tls_connector(property_on(cfg, "tls_insecure"))?;
+        let name = ServerName::try_from(host.to_string())
+            .map_err(|_| anyhow!(trf("“{host}” is not a valid server name for TLS", &[("host", &host)])))?;
+        Client::connect_tls((host, port), options, name, &connector).await
+    } else {
+        Client::connect((host, port), options).await
+    };
+    let client = connected.map_err(|e| match e {
         NativeclickError::Timeout | NativeclickError::Io(_) => anyhow!(trf("Could not connect to {host}:{port}: {error}", &[
             ("host", &host),
             ("port", &port),
@@ -122,7 +207,7 @@ impl ChSession {
             let data_type = get(3);
             t.columns.push(ColumnInfo {
                 primary_key: get(4) == "1",
-                nullable: data_type.starts_with("Nullable("),
+                nullable: is_nullable(&data_type),
                 name: column,
                 data_type,
             });
@@ -200,16 +285,42 @@ impl ChSession {
     }
 }
 
-/// Column type for DDL: nullability is part of the type in ClickHouse (`Nullable(T)`), and a
-/// bare `String` is NOT NULL. The `null` modifier makes it Nullable, but the server rejects it on a
-/// type that already is (also inside `LowCardinality(…)`), so it's only added to plain types.
+/// `T` of a one-argument type wrapper such as `Nullable(T)` (the name is case-insensitive).
+fn unwrap_type<'a>(ty: &'a str, wrapper: &str) -> Option<&'a str> {
+    let ty = ty.trim();
+    let rest = ty.get(wrapper.len()..)?;
+    (ty.get(..wrapper.len())?.eq_ignore_ascii_case(wrapper) && rest.starts_with('(') && rest.ends_with(')'))
+        .then(|| rest[1..rest.len() - 1].trim())
+}
+
+/// The type inside `Nullable(…)` / `LowCardinality(…)` (`LowCardinality(Nullable(String))` →
+/// `String`).
+pub fn base_type(data_type: &str) -> &str {
+    let inner = unwrap_type(data_type, "LowCardinality").unwrap_or(data_type.trim());
+    unwrap_type(inner, "Nullable").unwrap_or(inner)
+}
+
+/// Nullability is part of the type: `Nullable(T)`, also inside `LowCardinality(…)`.
+pub fn is_nullable(data_type: &str) -> bool {
+    let inner = unwrap_type(data_type, "LowCardinality").unwrap_or(data_type);
+    unwrap_type(inner, "Nullable").is_some()
+}
+
+/// Column type for DDL with the requested nullability: `Nullable(T)` or `T`, keeping a
+/// `LowCardinality(…)` outside. Composite types (arrays, maps, tuples, JSON…) can't be
+/// Nullable and stay as written.
 pub fn column_type(data_type: &str, not_null: bool) -> String {
     let ty = data_type.trim();
-    match ty.strip_prefix("Nullable(").and_then(|t| t.strip_suffix(')')) {
-        Some(inner) if not_null => inner.to_string(),
-        _ if not_null || ty.contains("Nullable(") => ty.to_string(),
-        _ => format!("{ty} null"),
+    let low_cardinality = unwrap_type(ty, "LowCardinality");
+    let inner = low_cardinality.unwrap_or(ty);
+    let base = unwrap_type(inner, "Nullable").unwrap_or(inner);
+    const COMPOSITE: [&str; 9] = ["Array", "Map", "Tuple", "Nested", "Variant", "Dynamic", "JSON", "Object", "AggregateFunction"];
+    let name = base.split('(').next().unwrap_or(base).trim();
+    if COMPOSITE.iter().any(|c| name.eq_ignore_ascii_case(c)) || name.ends_with("AggregateFunction") {
+        return ty.to_string();
     }
+    let core = if not_null { base.to_string() } else { format!("Nullable({base})") };
+    if low_cardinality.is_some() { format!("LowCardinality({core})") } else { core }
 }
 
 /// Converts a value to the text shown in the grid. The enum name is preferred for
@@ -272,11 +383,24 @@ mod tests {
     #[test]
     fn column_types() {
         assert_eq!(column_type("String", true), "String");
-        assert_eq!(column_type("String", false), "String null");
+        assert_eq!(column_type("String", false), "Nullable(String)");
         assert_eq!(column_type("Nullable(String)", false), "Nullable(String)");
         assert_eq!(column_type(" Nullable(Int32) ", true), "Int32");
-        // The server rejects NULL on a type that already is Nullable, also nested.
-        assert_eq!(column_type("LowCardinality(Nullable(String))", false), "LowCardinality(Nullable(String))");
+        // LowCardinality stays outside; composite types can't be Nullable.
+        assert_eq!(column_type("LowCardinality(String)", false), "LowCardinality(Nullable(String))");
+        assert_eq!(column_type("LowCardinality(Nullable(String))", true), "LowCardinality(String)");
+        assert_eq!(column_type("Array(String)", false), "Array(String)");
+        assert_eq!(column_type("Map(String, UInt64)", false), "Map(String, UInt64)");
+        assert_eq!(column_type("Decimal(18, 2)", false), "Nullable(Decimal(18, 2))");
+    }
+
+    #[test]
+    fn nullability() {
+        assert!(is_nullable("Nullable(String)"));
+        assert!(is_nullable("LowCardinality(Nullable(String))"));
+        assert!(!is_nullable("LowCardinality(String)"));
+        assert!(!is_nullable("Array(Nullable(String))"));
+        assert!(!is_nullable("String"));
     }
 
     #[test]
@@ -471,5 +595,169 @@ mod live_tests {
         assert!(session.list_databases().await.unwrap().contains(&"dc_disp".to_string()));
         session.use_database("default").await.unwrap();
         session.execute("DROP DATABASE dc_disp", 10).await.unwrap();
+    }
+
+    /// TLS on the secure port (DATACRAFT_CH_TLS_PORT; skipped without it). The certificate is
+    /// checked against the system trust store unless "Trust server certificate" is on: set
+    /// DATACRAFT_CH_TLS_TRUSTED=1 when the server's CA is trusted (SSL_CERT_FILE on Linux).
+    #[tokio::test]
+    #[ignore]
+    async fn tls() {
+        let (Some(mut cfg), Ok(port)) = (test_cfg(), std::env::var("DATACRAFT_CH_TLS_PORT")) else { return };
+        cfg.port = port.parse().expect("port");
+        cfg.set_property("tls", "true");
+        let trusted = std::env::var("DATACRAFT_CH_TLS_TRUSTED").is_ok_and(|v| v == "1");
+        match ChSession::connect(&cfg).await {
+            Ok(mut s) => {
+                assert!(trusted, "an untrusted certificate was accepted");
+                assert_eq!(s.rows("SELECT 1").await.unwrap()[0][0].as_deref(), Some("1"));
+            }
+            Err(e) => {
+                assert!(!trusted, "{e}");
+                assert!(e.to_string().contains("certificate"), "{e}");
+            }
+        }
+        cfg.set_property("tls_insecure", "true");
+        let mut s = ChSession::connect(&cfg).await.expect("TLS without the certificate check");
+        assert_eq!(s.rows("SELECT 1").await.unwrap()[0][0].as_deref(), Some("1"));
+        // The plain protocol doesn't talk to the secure port.
+        cfg.set_property("tls", "");
+        assert!(ChSession::connect(&cfg).await.is_err());
+    }
+
+    /// Find in Schema: NULLs in Nullable columns don't fail the search, LIKE wildcards in the
+    /// value are literal, and arrays are searched as text.
+    #[tokio::test]
+    #[ignore]
+    async fn schema_search_nulls_and_wildcards() {
+        use crate::db::schema_search::{SearchRequest, search};
+        let Some(cfg) = test_cfg() else { return };
+        let mut s = ChSession::connect(&cfg).await.unwrap();
+        for sql in [
+            "DROP DATABASE IF EXISTS dc_search",
+            "CREATE DATABASE dc_search",
+            "CREATE TABLE dc_search.t (id UInt8, n Nullable(String), lc LowCardinality(Nullable(String)), a Array(String)) ENGINE = MergeTree ORDER BY id",
+            r"INSERT INTO dc_search.t VALUES (1, NULL, NULL, []), (2, 'P_Q', NULL, []), (3, 'pxq', 'x', ['50%']), (4, 'a\\b', NULL, ['50x'])",
+        ] {
+            s.execute(sql, 10).await.unwrap();
+        }
+        let find = |value: &str| {
+            let request = SearchRequest { db: "dc_search".into(), schema: None, value: value.into(), exact: false, case_sensitive: false };
+            search(cfg.clone(), request, Arc::new(tokio::sync::Notify::new()))
+        };
+        for (value, ids) in [("p_q", ["2"]), ("50%", ["3"]), (r"a\b", ["4"])] {
+            let report = find(value).await.unwrap();
+            assert!(report.errors.is_empty(), "{value}: {:?}", report.errors);
+            let found: Vec<String> = report.matches.iter().flat_map(|m| m.result.rows.iter().map(|r| r[0].clone().unwrap_or_default())).collect();
+            assert_eq!(found, ids, "{value}");
+        }
+        s.execute("DROP DATABASE dc_search", 10).await.unwrap();
+    }
+
+    /// Copy Table To… into ClickHouse and back out, with SQLite on the other side: target types
+    /// that keep the values, NULLs, TRUNCATE for "delete the target's rows first", and ClickHouse
+    /// types (Nullable, unsigned…) read back.
+    #[tokio::test]
+    #[ignore]
+    async fn copy_in_and_out() {
+        use crate::db::copy::{CopyRequest, Mask, copy};
+        let Some(cfg) = test_cfg() else { return };
+        let dir = std::env::temp_dir().join(format!("datacraft-ch-copy-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("source.db");
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "create table src (id integer primary key, price double precision, amount numeric(10,2), ok boolean, born date, seen timestamp, note text);
+                 insert into src values (1, 0.30000000000000004, 12.34, 1, '1960-01-01', '2026-10-23 12:34:56.789', 'a_b');
+                 insert into src values (2, null, null, null, null, null, null);",
+            )
+            .unwrap();
+        let mut sqlite = ConnectionConfig::new(2, Driver::Sqlite);
+        sqlite.file_path = path.display().to_string();
+        let col = |name: &str, ty: &str, pk: bool| ColumnInfo { name: name.into(), data_type: ty.into(), nullable: !pk, primary_key: pk };
+        let columns = vec![
+            col("id", "integer", true),
+            col("price", "double precision", false),
+            col("amount", "numeric(10,2)", false),
+            col("ok", "boolean", false),
+            col("born", "date", false),
+            col("seen", "timestamp", false),
+            col("note", "text", false),
+        ];
+        let request = |source: (&str, &str), columns: Vec<ColumnInfo>, target: (&str, &str), create: bool, clear: bool| CopyRequest {
+            source_db: source.0.into(),
+            source_schema: source.0.into(),
+            source_table: source.1.into(),
+            target_names: columns.iter().map(|c| c.name.clone()).collect(),
+            masks: vec![Mask::Keep; columns.len()],
+            columns,
+            filter: String::new(),
+            percent: 100,
+            target_db: target.0.into(),
+            target_schema: target.0.into(),
+            target_table: target.1.into(),
+            create,
+            clear,
+            mask_key: "k".into(),
+            parents: false,
+            children: false,
+            mask_related: false,
+        };
+        let cancel = || Arc::new(tokio::sync::Notify::new());
+        let mut s = ChSession::connect(&cfg).await.unwrap();
+        s.execute("DROP DATABASE IF EXISTS dc_copy", 10).await.unwrap();
+        s.execute("CREATE DATABASE dc_copy", 10).await.unwrap();
+
+        // Into ClickHouse, creating the table.
+        copy(sqlite.clone(), cfg.clone(), request(("main", "src"), columns.clone(), ("dc_copy", "t"), true, false), cancel()).await.unwrap();
+        let types: Vec<String> = s
+            .rows("SELECT name, type FROM system.columns WHERE database = 'dc_copy' AND table = 't' ORDER BY position")
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| format!("{} {}", r[0].as_deref().unwrap(), r[1].as_deref().unwrap()))
+            .collect();
+        assert_eq!(
+            types,
+            [
+                "id Int32",
+                "price Nullable(Float64)",
+                "amount Nullable(Decimal(10, 2))",
+                "ok Nullable(Bool)",
+                "born Nullable(Date32)",
+                "seen Nullable(DateTime64(6))",
+                "note Nullable(String)"
+            ]
+        );
+        let rows = s.rows("SELECT * FROM dc_copy.t ORDER BY id").await.unwrap();
+        let first: Vec<Cell> = ["1", "0.30000000000000004", "12.34", "true", "1960-01-01", "2026-10-23 12:34:56.789", "a_b"].map(|v| Some(v.to_string())).into();
+        assert_eq!(rows[0], first);
+        assert!(rows[1][1..].iter().all(Option::is_none), "{:?}", rows[1]);
+
+        // Again into the existing table, deleting its rows first (TRUNCATE).
+        copy(sqlite.clone(), cfg.clone(), request(("main", "src"), columns, ("dc_copy", "t"), false, true), cancel()).await.unwrap();
+        assert_eq!(s.rows("SELECT count() FROM dc_copy.t").await.unwrap()[0][0].as_deref(), Some("2"));
+
+        // Out of ClickHouse into a new SQLite table, with the columns as introspected.
+        s.use_database("dc_copy").await.unwrap();
+        let ch_columns = s.introspect().await.unwrap()[0].tables.iter().find(|t| t.name == "t").unwrap().columns.clone();
+        copy(cfg.clone(), sqlite.clone(), request(("dc_copy", "t"), ch_columns, ("main", "back"), true, false), cancel()).await.unwrap();
+        let db = rusqlite::Connection::open(&path).unwrap();
+        let mut info = db.prepare("select name, type, \"notnull\" from pragma_table_info('back')").unwrap();
+        let back: Vec<String> = info
+            .query_map([], |r| Ok(format!("{} {} {}", r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(back, ["id INTEGER 1", "price REAL 0", "amount NUMERIC 0", "ok BOOLEAN 0", "born DATE 0", "seen DATETIME 0", "note TEXT 0"]);
+        let price: f64 = db.query_row("select price from back where id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(price, 0.30000000000000004);
+        let nulls: i64 = db.query_row("select count(*) from back where id = 2 and price is null and note is null", [], |r| r.get(0)).unwrap();
+        assert_eq!(nulls, 1);
+
+        s.use_database("default").await.unwrap();
+        s.execute("DROP DATABASE dc_copy", 10).await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

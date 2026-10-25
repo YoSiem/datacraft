@@ -439,7 +439,8 @@
     "The keys changed while saving; nothing was saved. Refresh and try again": "Klucze zmieniły się podczas zapisywania; nic nie zapisano. Odśwież i spróbuj ponownie",
     "The type of a key cannot be changed": "Nie można zmienić typu klucza",
     "“{value}” is not a valid TTL (seconds)": "„{value}” nie jest prawidłowym TTL (sekundy)",
-    "string (truncated)": "string (przycięty)"
+    "string (truncated)": "string (przycięty)",
+    "Up to 1,000,000 rows, inserted in batches of 100 without a transaction (ClickHouse has none): an error or a stop keeps the batches already inserted, and deleting the target's rows first can't be undone.": "Do 1 000 000 wierszy, wstawianych partiami po 100 bez transakcji (ClickHouse ich nie ma): błąd lub zatrzymanie pozostawia już wstawione partie, a wcześniejszego usunięcia wierszy w tabeli docelowej nie można cofnąć."
   },
   "core": {
     "The statement affected {n} rows (expected 1); nothing was saved:\n{stmt}": "Instrukcja zmieniła wiersze: {n} (oczekiwano 1); nic nie zapisano:\n{stmt}",
@@ -490,7 +491,8 @@
     "Could not connect to {host}:{port}: {error}": "Nie można połączyć się z {host}:{port}: {error}",
     "ClickHouse applies UPDATE and DELETE as asynchronous mutations that don't report affected rows; run them from a SQL console": "ClickHouse stosuje UPDATE i DELETE jako asynchroniczne mutacje, które nie zwracają liczby zmienionych wierszy; wykonaj je w konsoli SQL",
     "Code {code} ({name}): {message}": "Kod {code} ({name}): {message}",
-    "ClickHouse fixes the primary key and indexes when the table is created; change them from a SQL console": "ClickHouse ustala klucz główny i indeksy przy tworzeniu tabeli; zmień je w konsoli SQL"
+    "ClickHouse fixes the primary key and indexes when the table is created; change them from a SQL console": "ClickHouse ustala klucz główny i indeksy przy tworzeniu tabeli; zmień je w konsoli SQL",
+    "“{host}” is not a valid server name for TLS": "„{host}” nie jest prawidłową nazwą serwera dla TLS"
   },
   "mysql": {
     "Error {code} (SQLSTATE {state}): {message}": "Błąd {code} (SQLSTATE {state}): {message}"

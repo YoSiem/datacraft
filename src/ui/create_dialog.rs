@@ -598,7 +598,7 @@ mod tests {
             "create table `default`.items\n(\n    id UInt64,\n    name String default 'n/a',\n    note Nullable(String),\n    primary key (id)\n)\nengine = MergeTree\norder by (id)"
         );
         let cols = [col("x", "String", false, false, "")];
-        assert!(create_table_sql(Driver::ClickHouse, "db", "t", &cols).ends_with("    x String null\n)\nengine = MergeTree\norder by (tuple())"));
+        assert!(create_table_sql(Driver::ClickHouse, "db", "t", &cols).ends_with("    x Nullable(String)\n)\nengine = MergeTree\norder by (tuple())"));
     }
 
     #[test]
