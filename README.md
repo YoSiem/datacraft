@@ -157,6 +157,7 @@ Get packaged builds from the official [GitHub Releases](https://github.com/javy-
 | macOS 11+ · Apple Silicon and Intel | <code>DataCraft-&lt;version&gt;-universal.dmg</code> | Open the disk image and move DataCraft to Applications. |
 | Windows 10/11 · x64 | <code>DataCraft-&lt;version&gt;-windows-x64.zip</code> | Extract the archive and run <code>DataCraft.exe</code>. |
 | Windows on ARM · ARM64 | <code>DataCraft-&lt;version&gt;-windows-arm64.zip</code> | Extract the archive and run <code>DataCraft.exe</code>. |
+| Linux · x64 and ARM64 (glibc 2.35+) | <code>DataCraft-&lt;version&gt;-linux-x64.tar.gz</code> / <code>-linux-arm64.tar.gz</code> | Extract the archive and run <code>DataCraft/datacraft</code>. Needs a Vulkan driver, SQLite, D-Bus and a Secret Service provider (GNOME Keyring or KWallet). |
 
 The macOS app is not notarized and Windows executables are unsigned, so the operating system may show a first-launch warning. Check the release notes for the build you download.
 
