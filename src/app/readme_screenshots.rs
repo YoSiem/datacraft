@@ -178,6 +178,7 @@ fn fixture(dark: bool) -> DataCraftApp {
         key_cols: vec![0],
         binary_cols: vec![false; 6],
         has_pk: true,
+        insert_only: false,
     }));
     view.begin_edit(0, 5);
     view.finish_inline_edit();

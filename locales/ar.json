@@ -116,7 +116,8 @@
     "error": "خطأ",
     "{n} tables": "{n} جداول",
     "Manual": "يدوي",
-    "OK": "موافق"
+    "OK": "موافق",
+    "Show completions while typing": "إظهار اقتراحات الإكمال أثناء الكتابة"
   },
   "console": {
     "Loading…": "جارٍ التحميل…",
@@ -440,7 +441,8 @@
     "The keys changed while saving; nothing was saved. Refresh and try again": "تغيرت المفاتيح أثناء الحفظ؛ لم يُحفظ أي شيء. حدّث البيانات وحاول مجددًا",
     "The type of a key cannot be changed": "لا يمكن تغيير نوع المفتاح",
     "“{value}” is not a valid TTL (seconds)": "«{value}» ليست مدة TTL صالحة (بالثواني)",
-    "string (truncated)": "نص (مقتطع)"
+    "string (truncated)": "نص (مقتطع)",
+    "Up to 1,000,000 rows, inserted in batches of 100 without a transaction (ClickHouse has none): an error or a stop keeps the batches already inserted, and deleting the target's rows first can't be undone.": "حتى 1,000,000 صف، تُدرج على دفعات من 100 دون معاملة (لا يدعم ClickHouse المعاملات): عند الخطأ أو الإيقاف تبقى الدفعات المدرجة، ولا يمكن التراجع عن حذف صفوف الجدول الهدف أولًا."
   },
   "core": {
     "The statement affected {n} rows (expected 1); nothing was saved:\n{stmt}": "أثرت العبارة في {n} صفوف (المتوقع صف واحد)؛ لم يُحفظ أي شيء:\n{stmt}",
@@ -487,7 +489,12 @@
     "Bring All to Front": "إحضار الكل إلى المقدمة",
     "DataCraft Help": "مساعدة DataCraft",
     "Query cancelled": "أُلغي الاستعلام",
-    "Query cancelled; the connection was closed and will reopen on the next run": "أُلغي الاستعلام؛ أُغلق الاتصال وسيُعاد فتحه عند التنفيذ التالي"
+    "Query cancelled; the connection was closed and will reopen on the next run": "أُلغي الاستعلام؛ أُغلق الاتصال وسيُعاد فتحه عند التنفيذ التالي",
+    "Could not connect to {host}:{port}: {error}": "تعذر الاتصال بـ {host}:{port}: {error}",
+    "ClickHouse applies UPDATE and DELETE as asynchronous mutations that don't report affected rows; run them from a SQL console": "ينفذ ClickHouse عمليتَي UPDATE وDELETE كتعديلات غير متزامنة لا تُرجع عدد الصفوف المتأثرة؛ نفّذهما من وحدة تحكم SQL",
+    "Code {code} ({name}): {message}": "الرمز {code} ({name}): {message}",
+    "ClickHouse fixes the primary key and indexes when the table is created; change them from a SQL console": "يثبت ClickHouse المفتاح الأساسي والفهارس عند إنشاء الجدول؛ غيّرها من وحدة تحكم SQL",
+    "“{host}” is not a valid server name for TLS": "«{host}» ليس اسم خادم صالحًا لاتصال TLS"
   },
   "mysql": {
     "Error {code} (SQLSTATE {state}): {message}": "خطأ {code} (SQLSTATE {state}): {message}"

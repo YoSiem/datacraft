@@ -1487,8 +1487,7 @@ dependencies = [
 [[package]]
 name = "egui_glow"
 version = "0.36.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "606ed4167daf341e5753d703285c4c1d562324b2c07aa8f405cd7d066fe58f3b"
+source = "git+https://github.com/abdu-benayad/egui?rev=c93e8863e958507056415e2a6dace56e23ba5f3a#c93e8863e958507056415e2a6dace56e23ba5f3a"
 dependencies = [
  "bytemuck",
  "egui",

@@ -242,20 +242,15 @@ const SYSTEM_FONTS: &[&[&str]] = &[
     &["%WINDIR%/Fonts/malgun.ttf"],
     // Thai.
     &["%WINDIR%/Fonts/LeelawUI.ttf", "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf"],
-    // Hebrew and other scripts in the Windows UI font.
-    &[
-        "%WINDIR%/Fonts/segoeui.ttf",
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-    ],
+    // Hebrew and other scripts in the Windows UI font; macOS uses Arial Unicode above.
+    &["%WINDIR%/Fonts/segoeui.ttf"],
     // Indic and African scripts on Windows.
     &["%WINDIR%/Fonts/Nirmala.ttf"],
     &["%WINDIR%/Fonts/ebrima.ttf"],
     // Symbols and emoji not covered by egui's bundled fallback fonts.
     &["%WINDIR%/Fonts/seguisym.ttf"],
-    &[
-        "%WINDIR%/Fonts/seguiemj.ttf",
-        "/System/Library/Fonts/Apple Color Emoji.ttc",
-    ],
+    // Apple Color Emoji is too large to load eagerly; keep this fallback Windows-only.
+    &["%WINDIR%/Fonts/seguiemj.ttf"],
 ];
 
 /// The system fallback fonts found, read once per run.
@@ -738,7 +733,7 @@ mod tests {
     /// Issue #4: CJK, Hangul and Thai in the grid and the UI used to show as boxes.
     #[test]
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    fn system_fonts_cover_cjk_hangul_thai_and_emoji() {
+    fn system_fonts_cover_scripts_and_windows_emoji() {
         assert!(!system_fonts().is_empty(), "no system fallback font found");
         let ctx = egui::Context::default();
         install_fonts(&ctx);
@@ -746,9 +741,11 @@ mod tests {
         out.textures_delta.clear();
         for family in [FontFamily::Proportional, FontFamily::Monospace, FontFamily::Name(FONT_BOLD.into())] {
             let font = FontId::new(13.0, family);
-            for text in ["中文汉字", "日本語のテキスト", "한국어", "ภาษาไทย", "🦀"] {
+            for text in ["中文汉字", "日本語のテキスト", "한국어", "ภาษาไทย"] {
                 assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, text)), "{text} missing in {font:?}");
             }
+            #[cfg(target_os = "windows")]
+            assert!(ctx.fonts_mut(|f| f.has_glyphs(&font, "🦀")), "emoji missing in {font:?}");
         }
     }
 }

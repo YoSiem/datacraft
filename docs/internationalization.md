@@ -28,6 +28,25 @@ visual arrow-key navigation and selections across mixed-direction boundaries
 still need care. It also introduces upstream API deprecation warnings in existing
 callers; those are separate from the RTL fix.
 
+### Published egui versions checked
+
+On 2026-10-26, isolated tests against the crates.io releases 0.36.2 and 0.37.0
+both failed the Arabic character/cursor-count and mixed-direction word-order
+checks with Inter plus the bundled Noto Sans Arabic font. In both releases,
+`العربية` has seven source characters but produces 16 glyph/cursor slots, and
+the first Arabic word in `عدد 123 مرحبا` is placed to the left of the last word.
+The corresponding application tests pass with the pinned patch.
+
+The new font-provider and glyph-rasterizer APIs in 0.37 improve font coverage;
+they do not supply paragraph bidi ordering or fix these cursor indices.
+`TextEdit::layouter` allows a custom editor layout, but adapting it would also
+require correct logical/visual cursor mapping and a consistent renderer for
+labels, menus, grid cells and highlighted SQL. Reversing or reshaping strings
+before handing them to the standard widgets would not preserve those editing
+semantics. No small replacement using the published renderer was found, so
+the fork remains a merge blocker pending a released fix or a separately reviewed
+renderer backport.
+
 ## Database and file encoding
 
 DataCraft keeps text as Rust UTF-8 strings and preserves Unicode in grid edits,
@@ -48,8 +67,10 @@ The server's schema and encoding still determine which values can be stored:
 
 DataCraft does not migrate existing columns, change collations, normalize stored
 text or repair data previously saved as question marks or replacement characters.
-Other scripts and additional emoji use the installed system fallback fonts;
-system color emoji fonts are enabled on Windows and macOS. No single bundled font
+Other scripts and additional emoji use the installed system fallback fonts.
+Windows also loads its installed color emoji font. On macOS, the existing Arial
+Unicode fallback and bundled Arabic font are used without eagerly loading the
+large Apple Color Emoji collection or a redundant Arial font. No single bundled font
 covers every Unicode character. A missing glyph does not change the stored text.
 
 Regression tests cover Arabic and combining marks, Latin, CJK, Hangul, Thai,
