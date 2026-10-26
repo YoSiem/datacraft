@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=DataCraft
+Comment=Lightweight database client
+Exec=datacraft
+Icon=datacraft
+Terminal=false
+Categories=Development;Database;

@@ -476,12 +476,27 @@ impl ConnectionDialog {
             ui.add_space(6.0);
             ui.checkbox(&mut cfg.trust_cert, tr("Trust server certificate"));
         }
-        // Redis / Valkey over TLS (`rediss://`); MongoDB takes `?tls=true` in its URL.
-        if cfg.driver == Driver::Redis {
+        // Redis / Valkey over TLS (`rediss://`); MongoDB takes `?tls=true` in its URL. ClickHouse
+        // has its own secure port, followed when it was on the default one.
+        if matches!(cfg.driver, Driver::Redis | Driver::ClickHouse) {
             ui.add_space(6.0);
             let mut tls = cfg.property("tls").is_some_and(|v| v.eq_ignore_ascii_case("true"));
             if ui.checkbox(&mut tls, tr("Use TLS")).changed() {
                 cfg.set_property("tls", if tls { "true" } else { "" });
+                if cfg.driver == Driver::ClickHouse {
+                    let (plain, secure) = (Driver::ClickHouse.default_port(), crate::db::clickhouse::TLS_PORT);
+                    match (tls, cfg.port) {
+                        (true, p) if p == plain => cfg.port = secure,
+                        (false, p) if p == secure => cfg.port = plain,
+                        _ => {}
+                    }
+                }
+            }
+            if tls && cfg.driver == Driver::ClickHouse {
+                let mut insecure = cfg.property("tls_insecure").is_some_and(|v| v.eq_ignore_ascii_case("true"));
+                if ui.checkbox(&mut insecure, tr("Trust server certificate")).changed() {
+                    cfg.set_property("tls_insecure", if insecure { "true" } else { "" });
+                }
             }
         }
     }

@@ -87,6 +87,7 @@
     "Lightweight SQL client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle and SQLite.": "适用于 PostgreSQL、MySQL、MariaDB、SQL Server、Oracle 和 SQLite 的轻量级 SQL 客户端。",
     "Made with Rust, egui and tokio": "使用 Rust、egui 和 tokio 构建",
     "Max rows per query:": "每次查询的最大行数：",
+    "Show completions while typing": "输入时显示补全建议",
     "Copy SQL": "复制 SQL",
     "Saving…": "正在保存…",
     "Table “{name}” created": "表“{name}”已创建",
@@ -440,7 +441,8 @@
     "The keys changed while saving; nothing was saved. Refresh and try again": "保存期间键已更改；未保存任何内容。请刷新后重试",
     "The type of a key cannot be changed": "无法更改键的类型",
     "“{value}” is not a valid TTL (seconds)": "“{value}”不是有效的 TTL（秒）",
-    "string (truncated)": "string（已截断）"
+    "string (truncated)": "string（已截断）",
+    "Up to 1,000,000 rows, inserted in batches of 100 without a transaction (ClickHouse has none): an error or a stop keeps the batches already inserted, and deleting the target's rows first can't be undone.": "最多 1,000,000 行，以每批 100 行插入，不使用事务（ClickHouse 不支持事务）：出错或停止时已插入的批次会保留，且事先删除目标表的行无法撤销。"
   },
   "core": {
     "The statement affected {n} rows (expected 1); nothing was saved:\n{stmt}": "该语句影响了 {n} 行（预期为 1 行）；未保存任何内容：\n{stmt}",
@@ -487,7 +489,12 @@
     "Bring All to Front": "全部置于顶层",
     "DataCraft Help": "DataCraft 帮助",
     "Query cancelled": "查询已取消",
-    "Query cancelled; the connection was closed and will reopen on the next run": "查询已取消；连接已关闭，将在下次运行时重新打开"
+    "Query cancelled; the connection was closed and will reopen on the next run": "查询已取消；连接已关闭，将在下次运行时重新打开",
+    "Could not connect to {host}:{port}: {error}": "无法连接到 {host}:{port}：{error}",
+    "ClickHouse applies UPDATE and DELETE as asynchronous mutations that don't report affected rows; run them from a SQL console": "ClickHouse 以异步变更方式执行 UPDATE 和 DELETE，且不报告受影响行数；请在 SQL 控制台中运行它们",
+    "Code {code} ({name}): {message}": "代码 {code} ({name})：{message}",
+    "ClickHouse fixes the primary key and indexes when the table is created; change them from a SQL console": "ClickHouse 在创建表时确定主键和索引；请在 SQL 控制台中修改它们",
+    "“{host}” is not a valid server name for TLS": "“{host}”不是有效的 TLS 服务器名称"
   },
   "mysql": {
     "Error {code} (SQLSTATE {state}): {message}": "错误 {code}（SQLSTATE {state}）：{message}"

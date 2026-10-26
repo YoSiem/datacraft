@@ -362,6 +362,8 @@ impl CopyDialog {
             ui.add_space(6.0);
             let note = if to == Driver::MongoDb {
                 tr("Up to 1,000,000 documents, inserted in batches of 500 without a transaction (a standalone MongoDB server has none): an error or a stop keeps those already inserted. Documents whose _id is already in the collection are skipped. Binary fields are not copied.")
+            } else if to == Driver::ClickHouse {
+                tr("Up to 1,000,000 rows, inserted in batches of 100 without a transaction (ClickHouse has none): an error or a stop keeps the batches already inserted, and deleting the target's rows first can't be undone.")
             } else {
                 tr("Up to 1,000,000 rows, inserted in one transaction. Binary columns are not copied.")
             };

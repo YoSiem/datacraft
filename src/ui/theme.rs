@@ -672,6 +672,8 @@ pub fn tab(ui: &mut Ui, selected: bool, ico: Option<Ico>, text: &str, closable: 
 
 #[cfg(test)]
 mod tests {
+    // Its only test is macOS/Windows: unused on Linux.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     use super::*;
 
     #[test]

@@ -87,6 +87,7 @@
     "Lightweight SQL client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle and SQLite.": "Cliente SQL ligero para PostgreSQL, MySQL, MariaDB, SQL Server, Oracle y SQLite.",
     "Made with Rust, egui and tokio": "Hecho con Rust, egui y tokio",
     "Max rows per query:": "Máx. filas por consulta:",
+    "Show completions while typing": "Mostrar sugerencias al escribir",
     "Copy SQL": "Copiar SQL",
     "Saving…": "Guardando…",
     "Table “{name}” created": "Tabla «{name}» creada",
@@ -440,7 +441,8 @@
     "The keys changed while saving; nothing was saved. Refresh and try again": "Las claves cambiaron mientras se guardaba; no se ha guardado nada. Refresca e inténtalo de nuevo",
     "The type of a key cannot be changed": "No se puede cambiar el tipo de una clave",
     "“{value}” is not a valid TTL (seconds)": "“{value}” no es un TTL válido (segundos)",
-    "string (truncated)": "string (recortado)"
+    "string (truncated)": "string (recortado)",
+    "Up to 1,000,000 rows, inserted in batches of 100 without a transaction (ClickHouse has none): an error or a stop keeps the batches already inserted, and deleting the target's rows first can't be undone.": "Hasta 1.000.000 de filas, insertadas en lotes de 100 sin transacción (ClickHouse no tiene): un error o una parada conserva los lotes ya insertados, y borrar antes las filas del destino no se puede deshacer."
   },
   "core": {
     "The statement affected {n} rows (expected 1); nothing was saved:\n{stmt}": "La sentencia afectó a {n} filas (se esperaba 1); no se ha guardado nada:\n{stmt}",
@@ -487,7 +489,12 @@
     "Bring All to Front": "Traer todo al frente",
     "DataCraft Help": "Ayuda de DataCraft",
     "Query cancelled": "Consulta cancelada",
-    "Query cancelled; the connection was closed and will reopen on the next run": "Consulta cancelada; la conexión se ha cerrado y se reabrirá en la próxima ejecución"
+    "Query cancelled; the connection was closed and will reopen on the next run": "Consulta cancelada; la conexión se ha cerrado y se reabrirá en la próxima ejecución",
+    "Could not connect to {host}:{port}: {error}": "No se pudo conectar a {host}:{port}: {error}",
+    "ClickHouse applies UPDATE and DELETE as asynchronous mutations that don't report affected rows; run them from a SQL console": "ClickHouse aplica UPDATE y DELETE como mutaciones asíncronas que no informan filas afectadas; ejecútalos desde una consola SQL",
+    "Code {code} ({name}): {message}": "Código {code} ({name}): {message}",
+    "ClickHouse fixes the primary key and indexes when the table is created; change them from a SQL console": "ClickHouse fija la clave primaria y los índices al crear la tabla; cámbialos desde una consola SQL",
+    "“{host}” is not a valid server name for TLS": "«{host}» no es un nombre de servidor válido para TLS"
   },
   "mysql": {
     "Error {code} (SQLSTATE {state}): {message}": "Error {code} (SQLSTATE {state}): {message}"

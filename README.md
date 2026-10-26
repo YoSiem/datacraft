@@ -133,6 +133,7 @@ PostgreSQL, MySQL and MariaDB backups require their native dump utilities. SQLit
 | Oracle | SQL console, data editor, object management and Data Pump exports; requires Oracle Instant Client |
 | Snowflake | Native REST connection without Java; password, key-pair, OAuth or programmatic access token authentication |
 | SQLite | Local database files, SQL console, data editor and online backups |
+| ClickHouse | Native TCP protocol (port 9000, or 9440 with TLS checked against the system's certificates), SQL console and data editor for inserts only (updates and deletes are asynchronous mutations, run them from the console). Copies into ClickHouse run without a transaction |
 | Redis / Valkey | Native commands, keys grouped by prefix, type/TTL information and read-only result grids |
 | MongoDB | <code>mongosh</code>-style commands, collection browsing and read-only result grids |
 
@@ -156,6 +157,7 @@ Get packaged builds from the official [GitHub Releases](https://github.com/javy-
 | macOS 11+ · Apple Silicon and Intel | <code>DataCraft-&lt;version&gt;-universal.dmg</code> | Open the disk image and move DataCraft to Applications. |
 | Windows 10/11 · x64 | <code>DataCraft-&lt;version&gt;-windows-x64.zip</code> | Extract the archive and run <code>DataCraft.exe</code>. |
 | Windows on ARM · ARM64 | <code>DataCraft-&lt;version&gt;-windows-arm64.zip</code> | Extract the archive and run <code>DataCraft.exe</code>. |
+| Linux · x64 and ARM64 (glibc 2.35+) | <code>DataCraft-&lt;version&gt;-linux-x64.tar.gz</code> / <code>-linux-arm64.tar.gz</code> | Extract the archive and run <code>DataCraft/datacraft</code>. Needs a Vulkan driver, SQLite, D-Bus and a Secret Service provider (GNOME Keyring or KWallet). |
 
 The macOS app is not notarized and Windows executables are unsigned, so the operating system may show a first-launch warning. Check the release notes for the build you download.
 
@@ -176,6 +178,15 @@ cargo build --locked --release
 ~~~
 
 The output is <code>target/release/datacraft.exe</code>. Native MSVC builds require the Visual Studio C++ build tools and Windows SDK, including the resource compiler used to embed the application icon.
+
+On Linux, the same commands build a native Wayland/X11 app rendered with Vulkan. The build links the system SQLite and D-Bus libraries, so install their development packages first:
+
+~~~sh
+sudo dnf install gcc pkgconf-pkg-config sqlite-devel dbus-devel      # Fedora
+sudo apt install build-essential pkg-config libsqlite3-dev libdbus-1-dev  # Debian / Ubuntu
+~~~
+
+At runtime it needs a Vulkan driver and a Secret Service provider, such as GNOME Keyring or KWallet, to store saved passwords.
 
 On macOS:
 

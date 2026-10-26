@@ -1783,6 +1783,8 @@ mod tests {
             &w,
             14,
             vec![
+                // Apple's SQLite defaults to legacy renames; the bundled one (Windows, Linux) doesn't.
+                "pragma legacy_alter_table = off".into(),
                 "create table dc_auto (id integer primary key autoincrement, n int)".into(),
                 "create view dc_view as select id, n from dc_auto".into(),
                 "insert into dc_auto (n) values (1)".into(),
