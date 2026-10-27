@@ -32,7 +32,7 @@ pub fn literal(driver: Driver, value: &Cell) -> String {
                 // MySQL and Snowflake also treat a backslash as an escape inside strings; ClickHouse
                 // does the same inside '…' (its `"…"` stays an identifier).
                 Driver::MySql | Driver::MariaDb | Driver::Snowflake | Driver::ClickHouse => format!("'{}'", escaped.replace('\\', "\\\\")),
-                Driver::Postgres | Driver::Sqlite | Driver::Oracle | Driver::Redis | Driver::MongoDb => format!("'{escaped}'"),
+                Driver::Postgres | Driver::Sqlite | Driver::Oracle | Driver::Redis | Driver::MongoDb | Driver::InfluxDb => format!("'{escaped}'"),
             }
         }
     }
@@ -93,6 +93,7 @@ pub fn change_statements(
         match driver {
             Driver::Redis => out.extend(crate::db::redis_db::change_commands(ch, types)?),
             Driver::MongoDb => out.push(crate::db::mongo::change_command(table, ch, types)?),
+            Driver::InfluxDb => return Err(crate::i18n::tr("Editing is not available for this engine").into()),
             _ => out.push(change_sql(driver, schema, table, ch)),
         }
     }

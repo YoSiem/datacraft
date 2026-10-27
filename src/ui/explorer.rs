@@ -852,6 +852,7 @@ fn object_groups(
     let groups: &[(ObjectKind, &str, &str)] = match driver {
         Driver::Redis => &[(ObjectKind::Table, tr("key groups"), "t")],
         Driver::MongoDb => &[(ObjectKind::Table, tr("collections"), "t"), (ObjectKind::View, tr("views"), "v")],
+        Driver::InfluxDb => &[(ObjectKind::Table, tr("measurements"), "t")],
         _ => &[(ObjectKind::Table, tr("Tables"), "t"), (ObjectKind::View, tr("Views"), "v")],
     };
     for &(kind, label, gk) in groups {
@@ -910,7 +911,7 @@ fn object_groups(
         }
         for t in tables {
             let tref = TableRef { conn, db: db.to_string(), schema: s.name.clone(), table: t.name.clone() };
-            table_rows(ui, state, actions, tref, t, depth + 1, sql, driver != Driver::Redis);
+            table_rows(ui, state, actions, tref, t, depth + 1, sql, driver.can_copy());
         }
     }
 }

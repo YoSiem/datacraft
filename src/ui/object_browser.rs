@@ -462,7 +462,7 @@ impl ObjectBrowser {
         let connection = connections.iter().find(|c| c.cfg.id == scope.conn);
         let connected = connection.is_some_and(|c| c.status == ConnStatus::Connected);
         let writable = connected && connection.is_some_and(|c| !c.cfg.read_only);
-        let copyable = connection.is_some_and(|c| c.cfg.driver != crate::db::Driver::Redis);
+        let copyable = connection.is_some_and(|c| c.cfg.driver.can_copy());
         // New / Edit View: SQL engines only.
         let views = writable && connection.is_some_and(|c| !c.cfg.driver.is_nosql());
         ui.add_space(8.0);

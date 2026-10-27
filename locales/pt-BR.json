@@ -440,7 +440,12 @@
     "The type of a key cannot be changed": "Não é possível alterar o tipo de uma chave",
     "“{value}” is not a valid TTL (seconds)": "“{value}” não é um TTL válido (segundos)",
     "string (truncated)": "string (truncado)",
-    "Up to 1,000,000 rows, inserted in batches of 100 without a transaction (ClickHouse has none): an error or a stop keeps the batches already inserted, and deleting the target's rows first can't be undone.": "Até 1.000.000 de linhas, inseridas em lotes de 100 sem transação (o ClickHouse não tem): um erro ou uma parada mantém os lotes já inseridos, e excluir antes as linhas do destino não pode ser desfeito."
+    "Up to 1,000,000 rows, inserted in batches of 100 without a transaction (ClickHouse has none): an error or a stop keeps the batches already inserted, and deleting the target's rows first can't be undone.": "Até 1.000.000 de linhas, inseridas em lotes de 100 sem transação (o ClickHouse não tem): um erro ou uma parada mantém os lotes já inseridos, e excluir antes as linhas do destino não pode ser desfeito.",
+    "Bucket:": "Bucket:",
+    "Organization:": "Organização:",
+    "Token": "Token",
+    "Token:": "Token:",
+    "measurements": "medições"
   },
   "core": {
     "The statement affected {n} rows (expected 1); nothing was saved:\n{stmt}": "A instrução afetou {n} linhas (esperada 1); nada foi salvo:\n{stmt}",
@@ -492,7 +497,14 @@
     "ClickHouse applies UPDATE and DELETE as asynchronous mutations that don't report affected rows; run them from a SQL console": "O ClickHouse aplica UPDATE e DELETE como mutações assíncronas que não informam linhas afetadas; execute-os em um console SQL",
     "Code {code} ({name}): {message}": "Código {code} ({name}): {message}",
     "ClickHouse fixes the primary key and indexes when the table is created; change them from a SQL console": "O ClickHouse fixa a chave primária e os índices ao criar a tabela; altere-os em um console SQL",
-    "“{host}” is not a valid server name for TLS": "“{host}” não é um nome de servidor válido para TLS"
+    "“{host}” is not a valid server name for TLS": "“{host}” não é um nome de servidor válido para TLS",
+    "An API token is required": "É necessário um token de API",
+    "HTTP {status} from InfluxDB: {message}": "HTTP {status} do InfluxDB: {message}",
+    "InfluxDB: {message}": "InfluxDB: {message}",
+    "Organization is required": "A organização é obrigatória",
+    "There is no bucket to query": "Não há nenhum bucket para consultar",
+    "Unreadable response from InfluxDB: {error}": "Resposta ilegível do InfluxDB: {error}",
+    "InfluxDB: {message}. InfluxQL needs a database/retention policy mapping for the bucket (created automatically since InfluxDB 2.4; before, with `influx v1 dbrp create`); Flux needs none.": "InfluxDB: {message}. O InfluxQL precisa de um mapeamento de banco de dados/política de retenção para o bucket (criado automaticamente desde o InfluxDB 2.4; antes, com `influx v1 dbrp create`); o Flux não precisa."
   },
   "mysql": {
     "Error {code} (SQLSTATE {state}): {message}": "Erro {code} (SQLSTATE {state}): {message}"

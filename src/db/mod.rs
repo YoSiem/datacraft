@@ -8,6 +8,7 @@ pub mod copy;
 pub mod create_db;
 pub mod backup;
 pub mod clickhouse;
+pub mod influx;
 pub mod mongo;
 pub mod mssql;
 pub mod object_info;
@@ -39,10 +40,12 @@ pub enum Driver {
     /// Redis and Valkey (same protocol).
     Redis,
     MongoDb,
+    /// InfluxDB 2 (HTTP API: Flux, and InfluxQL through the v1 compatibility endpoint).
+    InfluxDb,
 }
 
 impl Driver {
-    pub const ALL: [Driver; 10] = [
+    pub const ALL: [Driver; 11] = [
         Driver::Postgres,
         Driver::MySql,
         Driver::MariaDb,
@@ -53,12 +56,19 @@ impl Driver {
         Driver::Sqlite,
         Driver::MongoDb,
         Driver::Redis,
+        Driver::InfluxDb,
     ];
 
-    /// Redis and MongoDB: no SQL. Their consoles take the engine's own commands, the grid is
-    /// read-only and the SQL tools (DDL, import, copy, schema search…) are not offered.
+    /// Redis, MongoDB and InfluxDB: no SQL. Their consoles take the engine's own commands, the
+    /// grid is read-only and the SQL tools (DDL, import, copy, schema search…) are not offered.
     pub fn is_nosql(self) -> bool {
-        matches!(self, Driver::Redis | Driver::MongoDb)
+        matches!(self, Driver::Redis | Driver::MongoDb | Driver::InfluxDb)
+    }
+
+    /// Engines whose tables can be copied from and into (Copy Table To…): not Redis keys, nor
+    /// InfluxDB measurements.
+    pub fn can_copy(self) -> bool {
+        !matches!(self, Driver::Redis | Driver::InfluxDb)
     }
 
     pub fn label(self) -> &'static str {
@@ -73,6 +83,7 @@ impl Driver {
             Driver::ClickHouse => "ClickHouse",
             Driver::Redis => "Redis / Valkey",
             Driver::MongoDb => "MongoDB",
+            Driver::InfluxDb => "InfluxDB",
         }
     }
 
@@ -86,6 +97,7 @@ impl Driver {
             Driver::ClickHouse => 9000,
             Driver::Redis => 6379,
             Driver::MongoDb => 27017,
+            Driver::InfluxDb => 8086,
             Driver::Sqlite => 0,
         }
     }
@@ -93,7 +105,7 @@ impl Driver {
     /// Engines where each database has a single schema with its own name (SQLite: "main"),
     /// shown flattened in the explorer.
     pub fn flat_schema(self) -> bool {
-        matches!(self, Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::ClickHouse | Driver::Redis | Driver::MongoDb)
+        matches!(self, Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::ClickHouse | Driver::Redis | Driver::MongoDb | Driver::InfluxDb)
     }
 
     /// Engines whose server has several databases that can be created and dropped from the app.
@@ -109,6 +121,8 @@ impl Driver {
             // ClickHouse also quotes with backticks, but escapes with a backslash (so a backslash
             // in the name is escaped too).
             Driver::ClickHouse => format!("`{}`", name.replace('\\', "\\\\").replace('`', "\\`")),
+            // InfluxQL identifiers and Flux strings: double quotes, backslash escapes.
+            Driver::InfluxDb => format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\"")),
             Driver::Postgres | Driver::Sqlite | Driver::Oracle | Driver::Snowflake | Driver::Redis | Driver::MongoDb => {
                 format!("\"{}\"", name.replace('"', "\"\""))
             }
@@ -199,7 +213,8 @@ impl ConnectionConfig {
                 Driver::MongoDb => "test".into(),
                 Driver::Redis => "0".into(),
                 Driver::ClickHouse => "default".into(),
-                Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::Snowflake => String::new(),
+                // InfluxDB: the bucket; empty = the first one.
+                Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::Snowflake | Driver::InfluxDb => String::new(),
             },
             user: match driver {
                 Driver::Postgres => "postgres".into(),
@@ -207,7 +222,8 @@ impl ConnectionConfig {
                 Driver::MySql | Driver::MariaDb => "root".into(),
                 Driver::Oracle => "system".into(),
                 Driver::ClickHouse => "default".into(),
-                Driver::Sqlite | Driver::Snowflake | Driver::Redis | Driver::MongoDb => String::new(),
+                // InfluxDB: the organization; empty = the token's only one.
+                Driver::Sqlite | Driver::Snowflake | Driver::Redis | Driver::MongoDb | Driver::InfluxDb => String::new(),
             },
             password: String::new(),
             file_path: String::new(),
@@ -385,6 +401,7 @@ pub enum Session {
     ClickHouse(Box<clickhouse::ChSession>),
     Redis(Box<redis_db::RedisSession>),
     MongoDb(Box<mongo::MongoSession>),
+    InfluxDb(Box<influx::InfluxSession>),
 }
 
 impl Session {
@@ -424,6 +441,7 @@ impl Session {
             Driver::ClickHouse => Session::ClickHouse(Box::new(clickhouse::ChSession::connect(cfg).await?)),
             Driver::Redis => Session::Redis(Box::new(redis_db::RedisSession::connect(cfg).await?)),
             Driver::MongoDb => Session::MongoDb(Box::new(mongo::MongoSession::connect(cfg).await?)),
+            Driver::InfluxDb => Session::InfluxDb(Box::new(influx::InfluxSession::connect(cfg).await?)),
         })
     }
 
@@ -440,6 +458,7 @@ impl Session {
             Session::ClickHouse(s) => s.execute(sql, max_rows).await,
             Session::Redis(s) => s.execute(sql, max_rows).await,
             Session::MongoDb(s) => s.execute(sql, max_rows).await,
+            Session::InfluxDb(s) => s.execute(sql, max_rows).await,
         }
     }
 
@@ -455,6 +474,7 @@ impl Session {
             Session::ClickHouse(s) => s.current_database().await,
             Session::Redis(s) => s.current_database().await,
             Session::MongoDb(s) => s.current_database().await,
+            Session::InfluxDb(s) => s.current_database().await,
         }
     }
 
@@ -470,6 +490,7 @@ impl Session {
             Session::ClickHouse(s) => s.list_databases().await,
             Session::Redis(s) => s.list_databases().await,
             Session::MongoDb(s) => s.list_databases().await,
+            Session::InfluxDb(s) => s.list_databases().await,
         }
     }
 
@@ -488,6 +509,7 @@ impl Session {
             Session::ClickHouse(s) if !db.is_empty() => s.use_database(db).await,
             Session::Redis(s) if !db.is_empty() => s.use_database(db).await,
             Session::MongoDb(s) if !db.is_empty() => s.use_database(db).await,
+            Session::InfluxDb(s) if !db.is_empty() => s.use_database(db).await,
             _ => Ok(()),
         }
     }
@@ -509,6 +531,8 @@ impl Session {
             // Their commands (not SQL) come from `redis_db::change_commands` / `mongo::change_command`.
             Session::Redis(s) => s.apply_changes(statements).await,
             Session::MongoDb(s) => s.apply_changes(statements).await,
+            // Points are written with line protocol, which the data editor doesn't produce.
+            Session::InfluxDb(_) => anyhow::bail!(crate::i18n::tr("Editing is not available for this engine")),
         }
     }
 
@@ -531,7 +555,7 @@ impl Session {
     /// Runs the statements in ONE transaction (all or nothing), without the one-row rule of
     /// `apply_changes`. Returns the affected rows when the engine reports them.
     pub async fn run_transaction(&mut self, statements: &[String]) -> anyhow::Result<u64> {
-        if matches!(self, Session::Redis(_) | Session::MongoDb(_)) {
+        if matches!(self, Session::Redis(_) | Session::MongoDb(_) | Session::InfluxDb(_)) {
             anyhow::bail!(crate::i18n::tr("Editing is not available for this engine"));
         }
         if let Session::ClickHouse(s) = self {
@@ -577,6 +601,7 @@ impl Session {
             Session::ClickHouse(s) => s.is_closed(),
             Session::Redis(s) => s.is_closed(),
             Session::MongoDb(s) => s.is_closed(),
+            Session::InfluxDb(_) => false,
         }
     }
 
@@ -592,6 +617,7 @@ impl Session {
             Session::ClickHouse(s) => s.introspect().await,
             Session::Redis(s) => s.introspect().await,
             Session::MongoDb(s) => s.introspect().await,
+            Session::InfluxDb(s) => s.introspect().await,
         }
     }
 
@@ -601,6 +627,7 @@ impl Session {
         match self {
             Session::Redis(s) => return s.server_version().await,
             Session::MongoDb(s) => return s.server_version().await,
+            Session::InfluxDb(s) => return s.server_version().await,
             _ => {}
         }
         let sql = match driver {
@@ -611,7 +638,7 @@ impl Session {
             Driver::Sqlite => "SELECT sqlite_version()",
             Driver::Snowflake => "SELECT CURRENT_VERSION()",
             Driver::ClickHouse => "SELECT version()",
-            Driver::Redis | Driver::MongoDb => return None,
+            Driver::Redis | Driver::MongoDb | Driver::InfluxDb => return None,
         };
         let rs = self.execute(sql, 1).await.ok()?;
         let v = rs.into_iter().next()?.rows.into_iter().next()?.into_iter().next()??;
@@ -630,8 +657,8 @@ impl Session {
     pub fn quote_table(driver: Driver, schema: &str, table: &str) -> String {
         match driver {
             Driver::Postgres | Driver::Snowflake => format!("\"{}\".\"{}\"", schema.replace('"', "\"\""), table.replace('"', "\"\"")),
-            // No qualified names: a collection or a key pattern, as is.
-            Driver::Redis | Driver::MongoDb => table.to_string(),
+            // No qualified names: a collection, a key pattern or a measurement, as is.
+            Driver::Redis | Driver::MongoDb | Driver::InfluxDb => table.to_string(),
             Driver::Sqlite => format!("\"{}\"", table.replace('"', "\"\"")),
             Driver::MsSql => format!("[{}].[{}]", schema.replace(']', "]]"), table.replace(']', "]]")),
             // MySQL: the schema is the database.

@@ -440,7 +440,12 @@
     "The type of a key cannot be changed": "Der Typ eines Schlüssels kann nicht geändert werden",
     "“{value}” is not a valid TTL (seconds)": "„{value}“ ist keine gültige TTL (Sekunden)",
     "string (truncated)": "string (gekürzt)",
-    "Up to 1,000,000 rows, inserted in batches of 100 without a transaction (ClickHouse has none): an error or a stop keeps the batches already inserted, and deleting the target's rows first can't be undone.": "Bis zu 1.000.000 Zeilen, in Stapeln zu 100 ohne Transaktion eingefügt (ClickHouse hat keine): Bei einem Fehler oder Abbruch bleiben die bereits eingefügten Stapel erhalten, und das vorherige Löschen der Zeilen im Ziel lässt sich nicht rückgängig machen."
+    "Up to 1,000,000 rows, inserted in batches of 100 without a transaction (ClickHouse has none): an error or a stop keeps the batches already inserted, and deleting the target's rows first can't be undone.": "Bis zu 1.000.000 Zeilen, in Stapeln zu 100 ohne Transaktion eingefügt (ClickHouse hat keine): Bei einem Fehler oder Abbruch bleiben die bereits eingefügten Stapel erhalten, und das vorherige Löschen der Zeilen im Ziel lässt sich nicht rückgängig machen.",
+    "Bucket:": "Bucket:",
+    "Organization:": "Organisation:",
+    "Token": "Token",
+    "Token:": "Token:",
+    "measurements": "Measurements"
   },
   "core": {
     "The statement affected {n} rows (expected 1); nothing was saved:\n{stmt}": "Die Anweisung hat {n} Zeilen betroffen (erwartet: 1); nichts wurde gespeichert:\n{stmt}",
@@ -492,7 +497,14 @@
     "ClickHouse applies UPDATE and DELETE as asynchronous mutations that don't report affected rows; run them from a SQL console": "ClickHouse wendet UPDATE und DELETE als asynchrone Mutationen an, die keine betroffenen Zeilen melden; führen Sie sie in einer SQL-Konsole aus",
     "Code {code} ({name}): {message}": "Code {code} ({name}): {message}",
     "ClickHouse fixes the primary key and indexes when the table is created; change them from a SQL console": "ClickHouse legt Primärschlüssel und Indizes beim Erstellen der Tabelle fest; ändern Sie sie in einer SQL-Konsole",
-    "“{host}” is not a valid server name for TLS": "„{host}“ ist kein gültiger Servername für TLS"
+    "“{host}” is not a valid server name for TLS": "„{host}“ ist kein gültiger Servername für TLS",
+    "An API token is required": "Ein API-Token ist erforderlich",
+    "HTTP {status} from InfluxDB: {message}": "HTTP {status} von InfluxDB: {message}",
+    "InfluxDB: {message}": "InfluxDB: {message}",
+    "Organization is required": "Organisation ist erforderlich",
+    "There is no bucket to query": "Es gibt keinen Bucket zum Abfragen",
+    "Unreadable response from InfluxDB: {error}": "Unlesbare Antwort von InfluxDB: {error}",
+    "InfluxDB: {message}. InfluxQL needs a database/retention policy mapping for the bucket (created automatically since InfluxDB 2.4; before, with `influx v1 dbrp create`); Flux needs none.": "InfluxDB: {message}. InfluxQL braucht für den Bucket eine Zuordnung von Datenbank/Retention Policy (seit InfluxDB 2.4 automatisch angelegt; davor mit `influx v1 dbrp create`); Flux braucht keine."
   },
   "mysql": {
     "Error {code} (SQLSTATE {state}): {message}": "Fehler {code} (SQLSTATE {state}): {message}"

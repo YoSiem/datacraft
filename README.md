@@ -136,6 +136,7 @@ PostgreSQL, MySQL and MariaDB backups require their native dump utilities. SQLit
 | ClickHouse | Native TCP protocol (port 9000, or 9440 with TLS checked against the system's certificates), SQL console and data editor for inserts only (updates and deletes are asynchronous mutations, run them from the console). Copies into ClickHouse run without a transaction |
 | Redis / Valkey | Native commands, keys grouped by prefix, type/TTL information and read-only result grids |
 | MongoDB | <code>mongosh</code>-style commands, collection browsing and read-only result grids |
+| InfluxDB 2 | HTTP API (port 8086, HTTPS with "Use TLS") with an API token and an organization; Flux and InfluxQL consoles, buckets and measurements with their tags and fields, and read-only result grids filtered by a Flux predicate and a time range (the last hour by default). InfluxQL needs InfluxDB 2.4+ or a DBRP mapping |
 
 Support varies by engine, server version and account privileges. [Oracle Instant Client](https://www.oracle.com/database/technologies/instant-client.html) must be installed separately for Oracle connections.
 
