@@ -333,6 +333,7 @@
     "; (semicolon)": "; (ponto e vírgula)",
     "| (pipe)": "| (barra vertical)",
     "Record View": "Visualização de registro",
+    "View Value": "Ver valor",
     "Previous row": "Linha anterior",
     "Next row": "Próxima linha",
     "Row {n} of {total}": "Linha {n} de {total}",

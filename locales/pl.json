@@ -333,6 +333,7 @@
     "; (semicolon)": "; (średnik)",
     "| (pipe)": "| (kreska pionowa)",
     "Record View": "Widok rekordu",
+    "View Value": "Pokaż wartość",
     "Previous row": "Poprzedni wiersz",
     "Next row": "Następny wiersz",
     "Row {n} of {total}": "Wiersz {n} z {total}",

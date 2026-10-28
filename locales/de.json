@@ -333,6 +333,7 @@
     "; (semicolon)": "; (Semikolon)",
     "| (pipe)": "| (senkrechter Strich)",
     "Record View": "Datensatzansicht",
+    "View Value": "Wert anzeigen",
     "Previous row": "Vorherige Zeile",
     "Next row": "Nächste Zeile",
     "Row {n} of {total}": "Zeile {n} von {total}",

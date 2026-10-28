@@ -93,6 +93,8 @@ Pending edits have a distinct highlight. Updates, inserted rows and deletions ca
 
 The cell editor supports multiline text and a UTF-8 hex view. The inspector switches between table information, the selected column and the current record. Read-only connections disable editing and DDL.
 
+To read a whole value, Alt+Click (⌥-click on macOS) any cell, double-click a cell that can't be edited, or choose View Value from its context menu: a popup below the cell shows it, with JSON indented, and Esc or a click outside closes it.
+
 [Table editing and shortcuts →](docs/table-editor.md)
 
 ## Build filters before applying them

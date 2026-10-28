@@ -333,6 +333,7 @@
     "; (semicolon)": "; （分号）",
     "| (pipe)": "| （竖线）",
     "Record View": "记录视图",
+    "View Value": "查看值",
     "Previous row": "上一行",
     "Next row": "下一行",
     "Row {n} of {total}": "第 {n} 行，共 {total} 行",
