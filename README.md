@@ -7,13 +7,13 @@
 <p align="center">
   <strong>A native workspace for your databases.</strong><br>
   Explore schemas, write queries and edit data in a focused desktop app built with Rust and egui.<br>
-  macOS · Windows
+  macOS · Windows · Linux
 </p>
 
 <p align="center">
   <a href="LICENSE-MIT"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-22a8b8?style=flat-square"></a>
   <img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-Rust-253b53?style=flat-square&logo=rust">
-  <a href="https://github.com/javy-fernandez/datacraft/releases"><img alt="Download for macOS and Windows" src="https://img.shields.io/badge/download-macOS%20%C2%B7%20Windows-22a8b8?style=flat-square"></a>
+  <a href="https://github.com/javy-fernandez/datacraft/releases"><img alt="Download for macOS, Windows and Linux" src="https://img.shields.io/badge/download-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-22a8b8?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -142,10 +142,10 @@ Support varies by engine, server version and account privileges. [Oracle Instant
 
 ## Designed for the desktop
 
-- **macOS and Windows:** native macOS menus and window controls; a unified application header on Windows.
+- **macOS, Windows and Linux:** native macOS menus and window controls, a unified application header on Windows, and a native Wayland/X11 window on Linux.
 - **Light and dark themes:** adjustable interface zoom and editor font size.
 - **Eight interface languages:** English, Spanish, French, Brazilian Portuguese, German, Polish, Simplified Chinese and Japanese. Follow the system language or choose one in Settings.
-- **OS credential storage:** saved passwords use macOS Keychain or Windows Credential Manager, rather than the connections file.
+- **OS credential storage:** saved passwords use macOS Keychain, Windows Credential Manager or the Linux Secret Service (GNOME Keyring, KWallet), rather than the connections file.
 
 Built with Rust, egui/wgpu and Tokio. Database work runs through background workers to keep the interface responsive.
 

@@ -3397,7 +3397,8 @@ impl DataCraftApp {
                     ui.label(RichText::new("DataCraft").font(theme::bold(17.0)));
                     ui.label(RichText::new(trf("Version {version}", &[("version", &env!("CARGO_PKG_VERSION"))])).color(p.muted));
                     ui.add_space(8.0);
-                    ui.label(tr("Lightweight SQL client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle and SQLite."));
+                    ui.label(tr("Lightweight database client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, SQLite, Snowflake, ClickHouse, Redis, MongoDB and InfluxDB."));
+                    ui.label(RichText::new("macOS · Windows · Linux").small().color(p.muted));
                     ui.label(RichText::new(tr("Made with Rust, egui and tokio")).small().color(p.muted));
                     ui.add_space(14.0);
                     theme::primary_button(ui, tr("Close")).clicked()

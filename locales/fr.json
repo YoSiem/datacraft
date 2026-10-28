@@ -85,7 +85,7 @@
     "Running again will discard the pending grid changes.": "Réexécuter annulera les modifications en attente de la grille.",
     "Discard": "Abandonner",
     "Version {version}": "Version {version}",
-    "Lightweight SQL client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle and SQLite.": "Client SQL léger pour PostgreSQL, MySQL, MariaDB, SQL Server, Oracle et SQLite.",
+    "Lightweight database client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, SQLite, Snowflake, ClickHouse, Redis, MongoDB and InfluxDB.": "Client léger de bases de données pour PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, SQLite, Snowflake, ClickHouse, Redis, MongoDB et InfluxDB.",
     "Made with Rust, egui and tokio": "Conçu avec Rust, egui et tokio",
     "Max rows per query:": "Lignes max. par requête :",
     "Show completions while typing": "Afficher les suggestions pendant la saisie",

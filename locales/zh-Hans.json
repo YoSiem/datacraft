@@ -85,7 +85,7 @@
     "Running again will discard the pending grid changes.": "再次运行将丢弃网格中未提交的更改。",
     "Discard": "丢弃",
     "Version {version}": "版本 {version}",
-    "Lightweight SQL client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle and SQLite.": "适用于 PostgreSQL、MySQL、MariaDB、SQL Server、Oracle 和 SQLite 的轻量级 SQL 客户端。",
+    "Lightweight database client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, SQLite, Snowflake, ClickHouse, Redis, MongoDB and InfluxDB.": "适用于 PostgreSQL、MySQL、MariaDB、SQL Server、Oracle、SQLite、Snowflake、ClickHouse、Redis、MongoDB 和 InfluxDB 的轻量级数据库客户端。",
     "Made with Rust, egui and tokio": "使用 Rust、egui 和 tokio 构建",
     "Max rows per query:": "每次查询的最大行数：",
     "Show completions while typing": "输入时显示补全建议",
