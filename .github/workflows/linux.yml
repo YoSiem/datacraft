@@ -1,6 +1,6 @@
-# Linux builds for the releases. The macOS dmg and the Windows zips are built on a Mac and
-# uploaded with `gh release create`; publishing that release starts this workflow, which builds
-# DataCraft on Ubuntu (x64 and ARM64) and uploads DataCraft-<version>-linux-<arch>.tar.gz to it.
+# Linux builds for the releases. The macOS dmg and the Windows zips are built by release.yml.
+# Publishing a release starts this workflow, which builds DataCraft on Ubuntu (x64 and ARM64)
+# and uploads DataCraft-<version>-linux-<arch>.tar.gz to it.
 # A pull request that touches this file builds without uploading, and "Run workflow" rebuilds
 # the archives of an existing release.
 name: Linux release build
