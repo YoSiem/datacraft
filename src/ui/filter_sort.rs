@@ -356,7 +356,19 @@ impl Group {
             });
         }
         if let Some(index) = remove {
-            self.children.remove(index);
+            self.remove_row(index);
+        }
+    }
+
+    /// Removes a row. When it was the last one, the row before it becomes the last and its
+    /// connector, no longer shown, goes back to AND, so a row added later doesn't join it with
+    /// a hidden OR.
+    fn remove_row(&mut self, index: usize) {
+        self.children.remove(index);
+        if index == self.children.len()
+            && let Some(last) = self.children.last_mut()
+        {
+            last.connector = Connector::And;
         }
     }
 }
@@ -821,6 +833,23 @@ mod tests {
         );
         group.children.pop();
         assert_eq!(group.sql(Driver::Sqlite, &columns).unwrap(), None);
+    }
+
+    #[test]
+    fn removing_the_last_row_resets_the_hidden_connector() {
+        let row = |connector| flag("odd]name", connector);
+        let mut group = Group { children: vec![row(Connector::Or), row(Connector::Or), row(Connector::And)] };
+        group.remove_row(2);
+        assert_eq!(group.children[1].connector, Connector::And);
+        // A row in the middle keeps the connectors around it.
+        group.children.push(row(Connector::And));
+        group.remove_row(1);
+        assert_eq!(group.children[0].connector, Connector::Or);
+        group.children.push(row(Connector::And));
+        assert_eq!(
+            group.sql(Driver::Sqlite, &columns()).unwrap().unwrap(),
+            "(\"odd]name\" = '1' OR \"odd]name\" = '1' AND \"odd]name\" = '1')"
+        );
     }
 
     #[test]
