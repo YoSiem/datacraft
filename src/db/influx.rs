@@ -722,8 +722,28 @@ pub fn is_read_command(statement: &str) -> bool {
         return ["select", "show", "explain"].iter().any(|k| word.eq_ignore_ascii_case(k)) && !into;
     }
     let tokens = flux_tokens(statement);
+    // The names the imported packages go by: `import "experimental"` → `experimental`,
+    // `import e "experimental"` → `e`.
+    let packages: Vec<&str> = tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(i, t)| match (t, tokens.get(i + 1), tokens.get(i + 2)) {
+            (Tok::Ident(w), Some(Tok::Ident(alias)), Some(Tok::Str(_))) if w == "import" => Some(alias.as_str()),
+            (Tok::Ident(w), Some(Tok::Str(p)), _) if w == "import" => p.rsplit('/').next(),
+            _ => None,
+        })
+        .collect();
     !tokens.iter().enumerate().any(|(i, t)| match t {
-        Tok::Ident(w) if w == "to" || w == "wideTo" => tokens.get(i + 1) == Some(&Tok::Punct('(')),
+        // A call, and also a reference that calls it under another name (`f = to`, `fn: to`,
+        // `f = experimental.to`). `to:` is a parameter of other functions and `r.to` a column.
+        Tok::Ident(w) if w == "to" || w == "wideTo" => match tokens.get(i + 1) {
+            Some(Tok::Punct('(')) => true,
+            Some(Tok::Punct(':')) => false,
+            _ if i > 0 && tokens[i - 1] == Tok::Punct('.') => {
+                matches!(i.checked_sub(2).and_then(|j| tokens.get(j)), Some(Tok::Ident(p)) if packages.contains(&p.as_str()))
+            }
+            _ => true,
+        },
         // `import "http"` or, with an alias, `import h "http"`.
         Tok::Ident(w) if w == "import" => match (tokens.get(i + 1), tokens.get(i + 2)) {
             (Some(Tok::Str(p)), _) | (Some(Tok::Ident(_)), Some(Tok::Str(p))) => sends_data(p),
@@ -885,6 +905,14 @@ mod tests {
         assert!(!is_read_command("import \"influxdata/influxdb\"\ninfluxdb.wideTo(bucket: \"b\")"));
         assert!(!is_read_command("import h \"http\"\nh.post(url: \"http://x\")"));
         assert!(!is_read_command("import \"contrib/sranka/telegram\""));
+        // `to` called under another name.
+        assert!(!is_read_command("f = to\nfrom(bucket: \"a\") |> range(start: -1h) |> f(bucket: \"b\")"));
+        assert!(!is_read_command("w = (tables=<-, fn) => tables |> fn(bucket: \"b\")\nfrom(bucket: \"a\") |> w(fn: to)"));
+        assert!(!is_read_command("import e \"experimental\"\nf = e.to\nf(bucket: \"b\")"));
+        assert!(!is_read_command("import \"influxdata/influxdb\"\nf = influxdb.wideTo"));
+        // `to:` as a parameter and `r.to` as a column only read.
+        assert!(is_read_command("import \"experimental\"\nexperimental.addDuration(d: 1h, to: now())"));
+        assert!(is_read_command("from(bucket: \"b\") |> range(start: -1h) |> map(fn: (r) => ({r with x: r.to}))"));
         // Strings, comments and regular expressions don't count.
         assert!(is_read_command("// |> to(bucket: \"b\")\nfrom(bucket: \"to(\") |> range(start: -1h) |> filter(fn: (r) => r.host =~ /\"to(/)"));
     }
