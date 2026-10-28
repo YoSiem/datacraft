@@ -291,7 +291,7 @@ fn definition_query(driver: Driver, db: &str, schema: &str, view: &str) -> Strin
             lit(schema),
             lit(view)
         ),
-        Driver::Redis | Driver::MongoDb => String::new(),
+        Driver::Redis | Driver::MongoDb | Driver::InfluxDb => String::new(),
     }
 }
 

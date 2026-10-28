@@ -440,7 +440,12 @@
     "The type of a key cannot be changed": "无法更改键的类型",
     "“{value}” is not a valid TTL (seconds)": "“{value}”不是有效的 TTL（秒）",
     "string (truncated)": "string（已截断）",
-    "Up to 1,000,000 rows, inserted in batches of 100 without a transaction (ClickHouse has none): an error or a stop keeps the batches already inserted, and deleting the target's rows first can't be undone.": "最多 1,000,000 行，以每批 100 行插入，不使用事务（ClickHouse 不支持事务）：出错或停止时已插入的批次会保留，且事先删除目标表的行无法撤销。"
+    "Up to 1,000,000 rows, inserted in batches of 100 without a transaction (ClickHouse has none): an error or a stop keeps the batches already inserted, and deleting the target's rows first can't be undone.": "最多 1,000,000 行，以每批 100 行插入，不使用事务（ClickHouse 不支持事务）：出错或停止时已插入的批次会保留，且事先删除目标表的行无法撤销。",
+    "Bucket:": "存储桶：",
+    "Organization:": "组织：",
+    "Token": "令牌",
+    "Token:": "令牌：",
+    "measurements": "测量"
   },
   "core": {
     "The statement affected {n} rows (expected 1); nothing was saved:\n{stmt}": "该语句影响了 {n} 行（预期为 1 行）；未保存任何内容：\n{stmt}",
@@ -492,7 +497,14 @@
     "ClickHouse applies UPDATE and DELETE as asynchronous mutations that don't report affected rows; run them from a SQL console": "ClickHouse 以异步变更方式执行 UPDATE 和 DELETE，且不报告受影响行数；请在 SQL 控制台中运行它们",
     "Code {code} ({name}): {message}": "代码 {code} ({name})：{message}",
     "ClickHouse fixes the primary key and indexes when the table is created; change them from a SQL console": "ClickHouse 在创建表时确定主键和索引；请在 SQL 控制台中修改它们",
-    "“{host}” is not a valid server name for TLS": "“{host}”不是有效的 TLS 服务器名称"
+    "“{host}” is not a valid server name for TLS": "“{host}”不是有效的 TLS 服务器名称",
+    "An API token is required": "需要 API 令牌",
+    "HTTP {status} from InfluxDB: {message}": "InfluxDB 返回 HTTP {status}：{message}",
+    "InfluxDB: {message}": "InfluxDB：{message}",
+    "Organization is required": "组织为必填项",
+    "There is no bucket to query": "没有可查询的存储桶",
+    "Unreadable response from InfluxDB: {error}": "无法读取 InfluxDB 的响应：{error}",
+    "InfluxDB: {message}. InfluxQL needs a database/retention policy mapping for the bucket (created automatically since InfluxDB 2.4; before, with `influx v1 dbrp create`); Flux needs none.": "InfluxDB：{message}。InfluxQL 需要该存储桶的数据库/保留策略映射（自 InfluxDB 2.4 起自动创建；更早版本请使用 `influx v1 dbrp create` 创建）；Flux 不需要。"
   },
   "mysql": {
     "Error {code} (SQLSTATE {state}): {message}": "错误 {code}（SQLSTATE {state}）：{message}"

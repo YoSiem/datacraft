@@ -892,7 +892,7 @@ impl Console {
         }
         self.table_toolbar(ui, cx, &mut actions);
         hline(ui);
-        if cx.driver.is_nosql() { self.filter_row(ui, &mut actions); hline(ui); }
+        if cx.driver.is_nosql() { self.filter_row(ui, cx.driver, &mut actions); hline(ui); }
         else if let Some(t) = &mut self.table && t.view.filter_sort {
             if ui.add_enabled_ui(!self.running, |ui| t.filter_sort.show(ui, cx.driver, cx.columns.unwrap_or(&[]))).inner { actions.push(ConsoleAction::ApplyFilter); }
             hline(ui);
@@ -1260,7 +1260,7 @@ impl Console {
     }
 
     /// "WHERE | ORDER BY" row of the data editor.
-    fn filter_row(&mut self, ui: &mut Ui, actions: &mut Vec<ConsoleAction>) {
+    fn filter_row(&mut self, ui: &mut Ui, driver: Driver, actions: &mut Vec<ConsoleAction>) {
         let p = pal(ui);
         let Some(t) = self.table.as_mut() else { return };
         let id = self.id;
@@ -1271,9 +1271,12 @@ impl Console {
         let right = Rect::from_min_max(pos2(rect.left() + half, rect.top()), rect.max);
         ui.painter().vline(left.right(), rect.y_range().shrink(6.0), Stroke::new(1.0, p.grid));
         let mut submit = false;
+        // InfluxDB: a Flux predicate on `r` and the time range (see `influx::table_query`).
+        let (where_hint, order_hint) =
+            if driver == Driver::InfluxDb { ("r.host == \"web-1\"", "start: -1h") } else { ("WHERE", "ORDER BY") };
         for (r, ico, hint, text, salt) in [
-            (left, Ico::Filter, "WHERE", &mut t.where_clause, "where"),
-            (right, Ico::Sort, "ORDER BY", &mut t.order_by, "order"),
+            (left, Ico::Filter, where_hint, &mut t.where_clause, "where"),
+            (right, Ico::Sort, order_hint, &mut t.order_by, "order"),
         ] {
             icons::paint(
                 ui.painter(),

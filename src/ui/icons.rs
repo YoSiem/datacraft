@@ -400,5 +400,6 @@ pub fn driver_color(driver: Driver, p: &Palette) -> Color32 {
         Driver::ClickHouse => Color32::from_rgb(0xFC, 0xCC, 0x01),
         Driver::Redis => Color32::from_rgb(0xD8, 0x2C, 0x20),
         Driver::MongoDb => Color32::from_rgb(0x13, 0xAA, 0x52),
+        Driver::InfluxDb => Color32::from_rgb(0x9B, 0x2A, 0xFF),
     }
 }

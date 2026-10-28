@@ -90,7 +90,7 @@ pub struct Plan {
 
 /// Engines whose indexes can be listed and edited here (Snowflake has none on standard tables).
 pub fn has_indexes(driver: Driver) -> bool {
-    !matches!(driver, Driver::Snowflake | Driver::Redis | Driver::MongoDb)
+    !matches!(driver, Driver::Snowflake | Driver::Redis | Driver::MongoDb | Driver::InfluxDb)
 }
 
 pub fn initial_columns(d: &TableDetails) -> Vec<EditColumn> {
@@ -511,7 +511,7 @@ pub async fn load_details(s: &mut Session, driver: Driver, schema: &str, table: 
                 tr("SQLite can only make this change by rebuilding the table, and this table has constraints, triggers or foreign keys that a rebuild would lose. Use a console instead.").to_string()
             });
         }
-        Driver::Redis | Driver::MongoDb => anyhow::bail!(tr("Not available for this engine")),
+        Driver::Redis | Driver::MongoDb | Driver::InfluxDb => anyhow::bail!(tr("Not available for this engine")),
     }
     if d.columns.is_empty() {
         anyhow::bail!(trf("Table “{name}” not found", &[("name", &table)]));

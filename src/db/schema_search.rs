@@ -106,7 +106,7 @@ fn search_sql(
                 }
                 Driver::Oracle => format!("CAST({column} AS VARCHAR2(4000))"),
                 Driver::Snowflake => format!("TO_VARCHAR({column})"),
-                Driver::Redis | Driver::MongoDb => column.clone(),
+                Driver::Redis | Driver::MongoDb | Driver::InfluxDb => column.clone(),
                 Driver::Postgres | Driver::Sqlite => format!("CAST({column} AS TEXT)"),
                 // toString keeps NULL (a CAST to String fails on it) and takes any type.
                 Driver::ClickHouse => format!("toString({column})"),

@@ -901,6 +901,8 @@ impl DataCraftApp {
             let target = match (c.conn, &c.table) {
                 (None, _) => Err(tr("No connection").to_string()),
                 _ if read_only => Err(tr("Read-only connection").to_string()),
+                // Points are written with line protocol, which the data editor doesn't produce.
+                _ if driver == Some(Driver::InfluxDb) => Err(tr("Editing is not available for this engine").to_string()),
                 // Redis and MongoDB: only a key group or a collection opened in the data editor.
                 (Some(_), None) if nosql => Err(tr("Only data opened from the explorer can be edited on this engine").to_string()),
                 (Some(conn), Some(t)) => match self.table_info(conn, c.db.as_deref(), &t.schema, &t.table) {
@@ -1431,12 +1433,13 @@ impl DataCraftApp {
                 | ExplorerAction::EditView(t) => Some(t.conn),
                 _ => None,
             };
-            // Copying works with MongoDB collections too, but not with Redis keys.
-            let redis = match &a {
-                ExplorerAction::CopyTable(t) => self.conn(t.conn).is_some_and(|c| c.cfg.driver == Driver::Redis),
+            // Copying works with MongoDB collections too, but not with Redis keys nor InfluxDB
+            // measurements.
+            let not_copyable = match &a {
+                ExplorerAction::CopyTable(t) => self.conn(t.conn).is_some_and(|c| !c.cfg.driver.can_copy()),
                 _ => false,
             };
-            if redis || sql_only.and_then(|id| self.conn(id)).is_some_and(|c| c.cfg.driver.is_nosql()) {
+            if not_copyable || sql_only.and_then(|id| self.conn(id)).is_some_and(|c| c.cfg.driver.is_nosql()) {
                 self.error(tr("Not available for this engine").to_string());
                 continue;
             }
@@ -3576,11 +3579,13 @@ fn demo_server_config(id: u64, url: &str) -> Option<ConnectionConfig> {
     Some(cfg)
 }
 
-/// true if a statement only reads, in the engine's own language (SQL, Redis or `mongosh`).
+/// true if a statement only reads, in the engine's own language (SQL, Redis, `mongosh`, Flux or
+/// InfluxQL).
 fn is_read_statement(driver: Driver, statement: &str) -> bool {
     match driver {
         Driver::Redis => crate::db::redis_db::is_read_command(statement),
         Driver::MongoDb => crate::db::mongo::is_read_command(statement),
+        Driver::InfluxDb => crate::db::influx::is_read_command(statement),
         _ => is_query(statement),
     }
 }
@@ -3634,6 +3639,8 @@ pub fn table_query(driver: Driver, schema: &str, table: &str, where_clause: &str
             let sort = if o.is_empty() { String::new() } else { format!(".sort({})", braces(o)) };
             return format!("db.getCollection({name}).find({}){sort}.limit({max_rows})", braces(w));
         }
+        // The filter row holds a Flux predicate on `r` and the time range.
+        Driver::InfluxDb => return crate::db::influx::table_query(schema, table, w, o, max_rows),
         _ => {}
     }
     let t = Session::quote_table(driver, schema, table);
