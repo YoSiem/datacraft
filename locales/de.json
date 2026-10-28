@@ -1,5 +1,6 @@
 {
   "app": {
+    "Joins the next enabled condition. Click to switch AND/OR.": "Verknüpft die nächste aktive Bedingung. Klicken, um AND/OR umzuschalten.",
     "Select a database in the explorer to browse its objects.": "Wähle im Explorer eine Datenbank aus, um ihre Objekte anzuzeigen.",
     "Another save is in progress; try again when it finishes": "Ein anderer Speichervorgang läuft; versuchen Sie es erneut, wenn er abgeschlossen ist",
     "Cancel": "Abbrechen",
@@ -774,8 +775,6 @@
     "Add condition": "Bedingung hinzufügen",
     "Add group": "Gruppe hinzufügen",
     "Add sort column": "Sortierspalte hinzufügen",
-    "All (AND)": "Alle (AND)",
-    "Any (OR)": "Beliebige (OR)",
     "Ascending": "Aufsteigend",
     "Descending": "Absteigend",
     "Builder": "Assistent",
