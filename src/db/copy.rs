@@ -347,7 +347,7 @@ pub fn target_type(from: Driver, to: Driver, data_type: &str, primary_key: bool)
     use Driver::*;
     match (kind, to) {
         // Never a copy target (the dialog isn't offered for it).
-        (_, Redis | MongoDb | InfluxDb) => "string".into(),
+        (_, Redis | MongoDb | InfluxDb | Kusto) => "string".into(),
         (_, Sqlite) => match kind {
             Kind::SmallInt | Kind::Int | Kind::BigInt => "INTEGER".into(),
             Kind::Decimal(_) => "NUMERIC".into(),

@@ -37,6 +37,13 @@ pub fn split_statements(script: &str, driver: Driver) -> Vec<Statement> {
         }
         return out;
     }
+    // Kusto: requests separated by blank lines; `;` belongs to KQL (see `kusto::split_script`).
+    if driver == Driver::Kusto {
+        return crate::db::kusto::split_script(script)
+            .into_iter()
+            .map(|(start, end)| Statement { text: script[start..end].to_string(), start, end })
+            .collect();
+    }
     // MongoDB: `mongosh` commands, by `;` or line (see `mongo::split_script`).
     if driver == Driver::MongoDb {
         return crate::db::mongo::split_script(script)
@@ -292,7 +299,7 @@ pub fn statement_at(script: &str, cursor: usize, driver: Driver) -> Option<State
 /// function bodies and Snowflake's `$$…$$` procedure bodies).
 pub fn split_batches(script: &str, driver: Driver) -> Vec<Statement> {
     match driver {
-        Driver::Postgres | Driver::MySql | Driver::MariaDb | Driver::Oracle | Driver::Snowflake | Driver::ClickHouse | Driver::Redis | Driver::MongoDb | Driver::InfluxDb => {
+        Driver::Postgres | Driver::MySql | Driver::MariaDb | Driver::Oracle | Driver::Snowflake | Driver::ClickHouse | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => {
             split_statements(script, driver)
         }
         Driver::MsSql | Driver::Sqlite => {
@@ -689,7 +696,7 @@ pub fn explain_statements(stmt: &str, driver: Driver) -> Vec<String> {
         Driver::Postgres | Driver::MySql | Driver::MariaDb | Driver::ClickHouse => vec![format!("EXPLAIN {s}")],
         Driver::Sqlite => vec![format!("EXPLAIN QUERY PLAN {s}")],
         Driver::Snowflake => vec![format!("EXPLAIN USING TEXT {s}")],
-        Driver::Redis | Driver::MongoDb | Driver::InfluxDb => Vec::new(),
+        Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => Vec::new(),
         Driver::MsSql => vec!["SET SHOWPLAN_TEXT ON".into(), s.to_string(), "SET SHOWPLAN_TEXT OFF".into()],
         Driver::Oracle => vec![
             format!("EXPLAIN PLAN FOR {s}"),
@@ -1187,8 +1194,8 @@ impl Dialect {
         match driver {
             // Flux: `"…"` strings with `\` escapes and `//` comments; it has no `;`, which
             // separates scripts in a console. InfluxQL: `'…'` strings with `\` escapes and `--`
-            // comments.
-            Driver::InfluxDb => Dialect {
+            // comments. KQL: `'…'` and `"…"` strings with `\` escapes and `//` comments.
+            Driver::InfluxDb | Driver::Kusto => Dialect {
                 brackets: false,
                 backticks: false,
                 dollar_quotes: false,

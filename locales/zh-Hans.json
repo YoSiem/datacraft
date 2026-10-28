@@ -85,7 +85,7 @@
     "Running again will discard the pending grid changes.": "再次运行将丢弃网格中未提交的更改。",
     "Discard": "丢弃",
     "Version {version}": "版本 {version}",
-    "Lightweight database client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, SQLite, Snowflake, ClickHouse, Redis, MongoDB and InfluxDB.": "适用于 PostgreSQL、MySQL、MariaDB、SQL Server、Oracle、SQLite、Snowflake、ClickHouse、Redis、MongoDB 和 InfluxDB 的轻量级数据库客户端。",
+    "Lightweight database client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, SQLite, Snowflake, ClickHouse, Redis, MongoDB, InfluxDB and Kusto.": "适用于 PostgreSQL、MySQL、MariaDB、SQL Server、Oracle、SQLite、Snowflake、ClickHouse、Redis、MongoDB、InfluxDB 和 Kusto 的轻量级数据库客户端。",
     "Made with Rust, egui and tokio": "使用 Rust、egui 和 tokio 构建",
     "Max rows per query:": "每次查询的最大行数：",
     "Show completions while typing": "输入时显示补全建议",
@@ -446,7 +446,14 @@
     "Organization:": "组织：",
     "Token": "令牌",
     "Token:": "令牌：",
-    "measurements": "测量"
+    "measurements": "测量",
+    "<default>": "<默认>",
+    "Application (client secret)": "应用程序（客户端密码）",
+    "Azure CLI": "Azure CLI",
+    "Client ID:": "客户端 ID：",
+    "Client secret:": "客户端密码：",
+    "Tenant:": "租户：",
+    "Materialized views": "具体化视图"
   },
   "core": {
     "The statement affected {n} rows (expected 1); nothing was saved:\n{stmt}": "该语句影响了 {n} 行（预期为 1 行）；未保存任何内容：\n{stmt}",
@@ -505,7 +512,19 @@
     "Organization is required": "组织为必填项",
     "There is no bucket to query": "没有可查询的存储桶",
     "Unreadable response from InfluxDB: {error}": "无法读取 InfluxDB 的响应：{error}",
-    "InfluxDB: {message}. InfluxQL needs a database/retention policy mapping for the bucket (created automatically since InfluxDB 2.4; before, with `influx v1 dbrp create`); Flux needs none.": "InfluxDB：{message}。InfluxQL 需要该存储桶的数据库/保留策略映射（自 InfluxDB 2.4 起自动创建；更早版本请使用 `influx v1 dbrp create` 创建）；Flux 不需要。"
+    "InfluxDB: {message}. InfluxQL needs a database/retention policy mapping for the bucket (created automatically since InfluxDB 2.4; before, with `influx v1 dbrp create`); Flux needs none.": "InfluxDB：{message}。InfluxQL 需要该存储桶的数据库/保留策略映射（自 InfluxDB 2.4 起自动创建；更早版本请使用 `influx v1 dbrp create` 创建）；Flux 不需要。",
+    "Azure CLI: {message}": "Azure CLI：{message}",
+    "HTTP {status} from Kusto: {message}": "Kusto 返回 HTTP {status}：{message}",
+    "Kusto: {message}": "Kusto：{message}",
+    "Sign-in failed: no access token": "登录失败：未获得访问令牌",
+    "Sign-in failed: {message}": "登录失败：{message}",
+    "The Azure CLI (az) was not found: install it and run az login, or choose another authentication": "未找到 Azure CLI (az)：请安装并运行 az login，或选择其他身份验证方式",
+    "The application's client ID is required": "需要应用程序的客户端 ID",
+    "The application's client secret is required": "需要应用程序的客户端密码",
+    "The query was cancelled": "查询已取消",
+    "The tenant is required to sign in as an application": "以应用程序身份登录需要租户",
+    "Unreadable response from Kusto: {error}": "无法读取 Kusto 的响应：{error}",
+    "Unreadable response from the Azure CLI: {error}": "无法读取 Azure CLI 的响应：{error}"
   },
   "mysql": {
     "Error {code} (SQLSTATE {state}): {message}": "错误 {code}（SQLSTATE {state}）：{message}"
