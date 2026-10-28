@@ -133,8 +133,8 @@ impl ConnectionDialog {
         if cfg.name == old_def.name || cfg.name == old.label() {
             cfg.name = new.label().to_string();
         }
-        // Authenticator is Snowflake's only.
-        if new != Driver::Snowflake && cfg.auth == AuthMode::Authenticator {
+        // Authenticator is Snowflake's only; InfluxDB always takes a token.
+        if (new != Driver::Snowflake && cfg.auth == AuthMode::Authenticator) || new == Driver::InfluxDb {
             cfg.auth = AuthMode::UserPassword;
         }
         cfg.driver = new;
@@ -451,7 +451,11 @@ impl ConnectionDialog {
                         }
                     }
                     d => {
-                        ui.label(if d == Driver::Oracle { tr("Service:") } else { tr("Database:") });
+                        ui.label(match d {
+                            Driver::Oracle => tr("Service:"),
+                            Driver::InfluxDb => tr("Bucket:"),
+                            _ => tr("Database:"),
+                        });
                         text_field(ui, &mut item.cfg.database, "");
                         ui.end_row();
                     }
@@ -476,12 +480,28 @@ impl ConnectionDialog {
             ui.add_space(6.0);
             ui.checkbox(&mut cfg.trust_cert, tr("Trust server certificate"));
         }
-        // Redis / Valkey over TLS (`rediss://`); MongoDB takes `?tls=true` in its URL.
-        if cfg.driver == Driver::Redis {
+        // Redis / Valkey over TLS (`rediss://`); MongoDB takes `?tls=true` in its URL. ClickHouse
+        // has its own secure port, followed when it was on the default one; InfluxDB serves
+        // HTTPS on the same port.
+        if matches!(cfg.driver, Driver::Redis | Driver::ClickHouse | Driver::InfluxDb) {
             ui.add_space(6.0);
             let mut tls = cfg.property("tls").is_some_and(|v| v.eq_ignore_ascii_case("true"));
             if ui.checkbox(&mut tls, tr("Use TLS")).changed() {
                 cfg.set_property("tls", if tls { "true" } else { "" });
+                if cfg.driver == Driver::ClickHouse {
+                    let (plain, secure) = (Driver::ClickHouse.default_port(), crate::db::clickhouse::TLS_PORT);
+                    match (tls, cfg.port) {
+                        (true, p) if p == plain => cfg.port = secure,
+                        (false, p) if p == secure => cfg.port = plain,
+                        _ => {}
+                    }
+                }
+            }
+            if tls && matches!(cfg.driver, Driver::ClickHouse | Driver::InfluxDb) {
+                let mut insecure = cfg.property("tls_insecure").is_some_and(|v| v.eq_ignore_ascii_case("true"));
+                if ui.checkbox(&mut insecure, tr("Trust server certificate")).changed() {
+                    cfg.set_property("tls_insecure", if insecure { "true" } else { "" });
+                }
             }
         }
     }
@@ -676,13 +696,17 @@ fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: [(T, &str
 
 /// Authentication and the fields it shows: User & Password, Authenticator (Snowflake) or No auth.
 fn auth_rows(ui: &mut Ui, cfg: &mut ConnectionConfig) {
+    let influx = cfg.driver == Driver::InfluxDb;
     let label = |m: AuthMode| match m {
+        AuthMode::UserPassword if influx => tr("Token"),
         AuthMode::UserPassword => tr("User & Password"),
         AuthMode::Authenticator => tr("Authenticator"),
         AuthMode::NoAuth => tr("No auth"),
     };
     let modes: &[AuthMode] = if cfg.driver == Driver::Snowflake {
         &[AuthMode::UserPassword, AuthMode::Authenticator, AuthMode::NoAuth]
+    } else if influx {
+        &[AuthMode::UserPassword]
     } else {
         &[AuthMode::UserPassword, AuthMode::NoAuth]
     };
@@ -700,11 +724,12 @@ fn auth_rows(ui: &mut Ui, cfg: &mut ConnectionConfig) {
         ui.end_row();
     }
     if cfg.auth != AuthMode::NoAuth {
-        ui.label(tr("User:"));
+        // InfluxDB: the organization (empty: the token's only one) and the API token.
+        ui.label(if influx { tr("Organization:") } else { tr("User:") });
         text_field(ui, &mut cfg.user, "");
         ui.end_row();
 
-        ui.label(tr("Password:"));
+        ui.label(if influx { tr("Token:") } else { tr("Password:") });
         let hint = if cfg.password.is_empty() { tr("<empty>") } else { "" };
         ui.add(egui::TextEdit::singleline(&mut cfg.password).password(true).hint_text(hint).margin(egui::vec2(8.0, 5.0)).desired_width(f32::INFINITY));
         ui.end_row();

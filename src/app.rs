@@ -235,6 +235,8 @@ struct Persisted {
     islands_dark: bool,
     font_size: f32,
     max_rows: usize,
+    /// Completion list opens while typing in the console.
+    auto_complete: bool,
     consoles: Vec<PersistedConsole>,
     active: usize,
     console_counter: u64,
@@ -256,6 +258,7 @@ impl Default for Persisted {
             islands_dark: false,
             font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000,
+            auto_complete: true,
             consoles: Vec::new(),
             active: 0,
             console_counter: 0,
@@ -308,6 +311,7 @@ pub struct DataCraftApp {
     applied_dark: Option<bool>,
     font_size: f32,
     max_rows: usize,
+    auto_complete: bool,
     status_msg: Option<(String, bool)>,
     /// Last connection id handed out (so ids are monotonic).
     last_conn_id: u64,
@@ -388,6 +392,7 @@ impl DataCraftApp {
             applied_dark: None,
             font_size: persisted.font_size.clamp(8.0, 32.0),
             max_rows: persisted.max_rows.max(1),
+            auto_complete: persisted.auto_complete,
             status_msg: None,
             last_conn_id,
             demo_pending: false,
@@ -890,10 +895,14 @@ impl DataCraftApp {
             }
             let read_only = c.conn.and_then(|id| self.conn(id)).is_some_and(|cs| cs.cfg.read_only);
             let driver = c.conn.and_then(|id| self.conn(id)).map(|cs| cs.cfg.driver);
+            // ClickHouse: existing rows are read-only (mutations), but inserts still work.
+            let insert_only = driver == Some(Driver::ClickHouse);
             let nosql = driver.is_some_and(|d| d.is_nosql());
             let target = match (c.conn, &c.table) {
                 (None, _) => Err(tr("No connection").to_string()),
                 _ if read_only => Err(tr("Read-only connection").to_string()),
+                // Points are written with line protocol, which the data editor doesn't produce.
+                _ if driver == Some(Driver::InfluxDb) => Err(tr("Editing is not available for this engine").to_string()),
                 // Redis and MongoDB: only a key group or a collection opened in the data editor.
                 (Some(_), None) if nosql => Err(tr("Only data opened from the explorer can be edited on this engine").to_string()),
                 (Some(conn), Some(t)) => match self.table_info(conn, c.db.as_deref(), &t.schema, &t.table) {
@@ -908,7 +917,7 @@ impl DataCraftApp {
                     None => Err(tr("Database schema not loaded yet").to_string()),
                 },
             };
-            targets.push((i, target));
+            targets.push((i, target.map(|t| crate::ui::editing::EditTarget { insert_only, ..t })));
         }
         let c = &mut self.consoles[idx];
         for (i, t) in targets {
@@ -1424,12 +1433,13 @@ impl DataCraftApp {
                 | ExplorerAction::EditView(t) => Some(t.conn),
                 _ => None,
             };
-            // Copying works with MongoDB collections too, but not with Redis keys.
-            let redis = match &a {
-                ExplorerAction::CopyTable(t) => self.conn(t.conn).is_some_and(|c| c.cfg.driver == Driver::Redis),
+            // Copying works with MongoDB collections too, but not with Redis keys nor InfluxDB
+            // measurements.
+            let not_copyable = match &a {
+                ExplorerAction::CopyTable(t) => self.conn(t.conn).is_some_and(|c| !c.cfg.driver.can_copy()),
                 _ => false,
             };
-            if redis || sql_only.and_then(|id| self.conn(id)).is_some_and(|c| c.cfg.driver.is_nosql()) {
+            if not_copyable || sql_only.and_then(|id| self.conn(id)).is_some_and(|c| c.cfg.driver.is_nosql()) {
                 self.error(tr("Not available for this engine").to_string());
                 continue;
             }
@@ -3080,6 +3090,7 @@ impl DataCraftApp {
                             dark: self.dark,
                             font_size: self.font_size,
                             columns: None,
+                            auto_complete: self.auto_complete,
                         };
                         actions.extend(self.consoles[idx].show_results(ui, &cx));
                     });
@@ -3124,6 +3135,7 @@ impl DataCraftApp {
                 dark: self.dark,
                 font_size: self.font_size,
                 columns,
+                auto_complete: self.auto_complete,
             };
             let console = &mut self.consoles[idx];
             let out = if console.table.is_some() { console.show_table(ui, &cx) } else { console.show_console(ui, &cx) };
@@ -3407,6 +3419,7 @@ impl DataCraftApp {
                     ui.label(tr("Max rows per query:"));
                     ui.add(egui::DragValue::new(&mut self.max_rows).range(1..=1_000_000).speed(10));
                 });
+                ui.checkbox(&mut self.auto_complete, tr("Show completions while typing"));
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| theme::primary_button(ui, tr("Close")).clicked())
                     .inner
@@ -3566,11 +3579,13 @@ fn demo_server_config(id: u64, url: &str) -> Option<ConnectionConfig> {
     Some(cfg)
 }
 
-/// true if a statement only reads, in the engine's own language (SQL, Redis or `mongosh`).
+/// true if a statement only reads, in the engine's own language (SQL, Redis, `mongosh`, Flux or
+/// InfluxQL).
 fn is_read_statement(driver: Driver, statement: &str) -> bool {
     match driver {
         Driver::Redis => crate::db::redis_db::is_read_command(statement),
         Driver::MongoDb => crate::db::mongo::is_read_command(statement),
+        Driver::InfluxDb => crate::db::influx::is_read_command(statement),
         _ => is_query(statement),
     }
 }
@@ -3624,6 +3639,8 @@ pub fn table_query(driver: Driver, schema: &str, table: &str, where_clause: &str
             let sort = if o.is_empty() { String::new() } else { format!(".sort({})", braces(o)) };
             return format!("db.getCollection({name}).find({}){sort}.limit({max_rows})", braces(w));
         }
+        // The filter row holds a Flux predicate on `r` and the time range.
+        Driver::InfluxDb => return crate::db::influx::table_query(schema, table, w, o, max_rows),
         _ => {}
     }
     let t = Session::quote_table(driver, schema, table);
@@ -3880,6 +3897,7 @@ impl eframe::App for DataCraftApp {
             islands_dark: self.dark,
             font_size: self.font_size,
             max_rows: self.max_rows,
+            auto_complete: self.auto_complete,
             consoles: self
                 .consoles
                 .iter()
@@ -3921,7 +3939,7 @@ mod tests {
             dialog: None, confirm_delete: None, create: None, drop: None, views: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
             show_about: false, show_settings: false, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
-            max_rows: 1000, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
+            max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
             zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None,
             demo_explorer_w: None, demo_window: None, lang: None,
             modify: None,
@@ -3971,7 +3989,7 @@ mod tests {
         let index = app.active;
         let id = app.consoles[index].id;
         let mut result = ResultView::new(crate::db::ResultSet { columns: vec!["id".into()], rows: vec![vec![Some("1".into())]], ..Default::default() }, 991);
-        result.set_edit_target(Ok(crate::ui::editing::EditTarget { schema: "public".into(), table: "notes".into(), col_names: vec!["id".into()], key_cols: vec![0], binary_cols: vec![false], has_pk: true }));
+        result.set_edit_target(Ok(crate::ui::editing::EditTarget { schema: "public".into(), table: "notes".into(), col_names: vec!["id".into()], key_cols: vec![0], binary_cols: vec![false], has_pk: true, insert_only: false }));
         result.edit.as_mut().unwrap().state.set_value(&result.rs, crate::ui::editing::RowRef::Existing(0), 0, Some("2".into()));
         app.consoles[index].results.push(result);
         app.consoles[index].table.as_mut().unwrap().filter_sort.pending = Some(("id > 10".into(), "id DESC".into()));
@@ -4025,7 +4043,7 @@ mod tests {
         use crate::ui::editing::{EditTarget, RowRef};
         let mut app = tabs_app();
         let mut view = ResultView::new(ResultSet { columns: vec!["note".into()], rows: vec![vec![Some("before".into())]], ..Default::default() }, 1);
-        view.set_edit_target(Ok(EditTarget { schema: "main".into(), table: "notes".into(), col_names: vec!["note".into()], key_cols: vec![0], binary_cols: vec![false], has_pk: false }));
+        view.set_edit_target(Ok(EditTarget { schema: "main".into(), table: "notes".into(), col_names: vec!["note".into()], key_cols: vec![0], binary_cols: vec![false], has_pk: false, insert_only: false }));
         view.edit.as_mut().unwrap().state.set_value(&view.rs, RowRef::Existing(0), 0, Some("after".into()));
         app.consoles[3].results.push(view);
         let action = Discard::CloseTabs(2, CloseResults::Right(1));

@@ -362,6 +362,8 @@ impl CopyDialog {
             ui.add_space(6.0);
             let note = if to == Driver::MongoDb {
                 tr("Up to 1,000,000 documents, inserted in batches of 500 without a transaction (a standalone MongoDB server has none): an error or a stop keeps those already inserted. Documents whose _id is already in the collection are skipped. Binary fields are not copied.")
+            } else if to == Driver::ClickHouse {
+                tr("Up to 1,000,000 rows, inserted in batches of 100 without a transaction (ClickHouse has none): an error or a stop keeps the batches already inserted, and deleting the target's rows first can't be undone.")
             } else {
                 tr("Up to 1,000,000 rows, inserted in one transaction. Binary columns are not copied.")
             };
@@ -486,8 +488,8 @@ impl CopyDialog {
     }
 }
 
-/// Connections that can receive a copy: connected, not read-only and not Redis (it has no
-/// tables or collections to copy into).
+/// Connections that can receive a copy: connected, not read-only and not Redis or InfluxDB
+/// (no tables or collections to copy into).
 fn writable(c: &ConnState) -> bool {
-    c.status == ConnStatus::Connected && !c.cfg.read_only && c.cfg.driver != Driver::Redis
+    c.status == ConnStatus::Connected && !c.cfg.read_only && c.cfg.driver.can_copy()
 }

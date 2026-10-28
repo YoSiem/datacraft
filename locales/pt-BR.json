@@ -88,6 +88,7 @@
     "Lightweight SQL client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle and SQLite.": "Cliente SQL leve para PostgreSQL, MySQL, MariaDB, SQL Server, Oracle e SQLite.",
     "Made with Rust, egui and tokio": "Feito com Rust, egui e tokio",
     "Max rows per query:": "Máx. linhas por consulta:",
+    "Show completions while typing": "Mostrar sugestões ao digitar",
     "Copy SQL": "Copiar SQL",
     "Saving…": "Salvando…",
     "Table “{name}” created": "Tabela “{name}” criada",
@@ -439,7 +440,13 @@
     "The keys changed while saving; nothing was saved. Refresh and try again": "As chaves mudaram durante o salvamento; nada foi salvo. Atualize e tente novamente",
     "The type of a key cannot be changed": "Não é possível alterar o tipo de uma chave",
     "“{value}” is not a valid TTL (seconds)": "“{value}” não é um TTL válido (segundos)",
-    "string (truncated)": "string (truncado)"
+    "string (truncated)": "string (truncado)",
+    "Up to 1,000,000 rows, inserted in batches of 100 without a transaction (ClickHouse has none): an error or a stop keeps the batches already inserted, and deleting the target's rows first can't be undone.": "Até 1.000.000 de linhas, inseridas em lotes de 100 sem transação (o ClickHouse não tem): um erro ou uma parada mantém os lotes já inseridos, e excluir antes as linhas do destino não pode ser desfeito.",
+    "Bucket:": "Bucket:",
+    "Organization:": "Organização:",
+    "Token": "Token",
+    "Token:": "Token:",
+    "measurements": "medições"
   },
   "core": {
     "The statement affected {n} rows (expected 1); nothing was saved:\n{stmt}": "A instrução afetou {n} linhas (esperada 1); nada foi salvo:\n{stmt}",
@@ -486,7 +493,19 @@
     "Bring All to Front": "Trazer tudo para a frente",
     "DataCraft Help": "Ajuda do DataCraft",
     "Query cancelled": "Consulta cancelada",
-    "Query cancelled; the connection was closed and will reopen on the next run": "Consulta cancelada; a conexão foi fechada e será reaberta na próxima execução"
+    "Query cancelled; the connection was closed and will reopen on the next run": "Consulta cancelada; a conexão foi fechada e será reaberta na próxima execução",
+    "Could not connect to {host}:{port}: {error}": "Não foi possível conectar a {host}:{port}: {error}",
+    "ClickHouse applies UPDATE and DELETE as asynchronous mutations that don't report affected rows; run them from a SQL console": "O ClickHouse aplica UPDATE e DELETE como mutações assíncronas que não informam linhas afetadas; execute-os em um console SQL",
+    "Code {code} ({name}): {message}": "Código {code} ({name}): {message}",
+    "ClickHouse fixes the primary key and indexes when the table is created; change them from a SQL console": "O ClickHouse fixa a chave primária e os índices ao criar a tabela; altere-os em um console SQL",
+    "“{host}” is not a valid server name for TLS": "“{host}” não é um nome de servidor válido para TLS",
+    "An API token is required": "É necessário um token de API",
+    "HTTP {status} from InfluxDB: {message}": "HTTP {status} do InfluxDB: {message}",
+    "InfluxDB: {message}": "InfluxDB: {message}",
+    "Organization is required": "A organização é obrigatória",
+    "There is no bucket to query": "Não há nenhum bucket para consultar",
+    "Unreadable response from InfluxDB: {error}": "Resposta ilegível do InfluxDB: {error}",
+    "InfluxDB: {message}. InfluxQL needs a database/retention policy mapping for the bucket (created automatically since InfluxDB 2.4; before, with `influx v1 dbrp create`); Flux needs none.": "InfluxDB: {message}. O InfluxQL precisa de um mapeamento de banco de dados/política de retenção para o bucket (criado automaticamente desde o InfluxDB 2.4; antes, com `influx v1 dbrp create`); o Flux não precisa."
   },
   "mysql": {
     "Error {code} (SQLSTATE {state}): {message}": "Erro {code} (SQLSTATE {state}): {message}"

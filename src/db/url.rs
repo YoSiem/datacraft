@@ -22,6 +22,8 @@ pub fn jdbc_url(cfg: &ConnectionConfig) -> String {
         Driver::Snowflake => snowflake::jdbc_url(cfg),
         Driver::Redis => format!("redis://{authority}{slash_db}{extra}"),
         Driver::MongoDb => format!("mongodb://{authority}{slash_db}{extra}"),
+        Driver::ClickHouse => format!("clickhouse://{authority}{slash_db}{extra}"),
+        Driver::InfluxDb => format!("influxdb://{authority}{slash_db}{extra}"),
     }
 }
 
@@ -44,6 +46,22 @@ pub fn apply_jdbc_url(cfg: &mut ConnectionConfig, url: &str) -> bool {
         Driver::Snowflake => return snowflake::apply_jdbc_url(cfg, url),
         Driver::Redis => "redis://",
         Driver::MongoDb => "mongodb://",
+        Driver::ClickHouse => "clickhouse://",
+        Driver::InfluxDb => {
+            // `http(s)://host:8086` as InfluxDB's own tools take it: https switches TLS on.
+            for (scheme, tls) in [("http://", false), ("https://", true)] {
+                if url.len() >= scheme.len() && url[..scheme.len()].eq_ignore_ascii_case(scheme) {
+                    let mut c = cfg.clone();
+                    c.set_property("tls", if tls { "true" } else { "" });
+                    let ok = apply_jdbc_url(&mut c, &format!("influxdb://{}", url[scheme.len()..].trim_end_matches('/')));
+                    if ok {
+                        *cfg = c;
+                    }
+                    return ok;
+                }
+            }
+            "influxdb://"
+        }
     };
     let Some(rest) = url.strip_prefix(prefix) else { return false };
     let default_port = cfg.driver.default_port();
