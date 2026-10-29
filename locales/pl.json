@@ -1,5 +1,15 @@
 {
   "app": {
+    "Check for Updates…": "Sprawdź aktualizacje…",
+    "Check for updates at startup": "Sprawdzaj aktualizacje przy uruchomieniu",
+    "Checking for updates…": "Sprawdzanie aktualizacji…",
+    "Could not check for updates: {error}": "Nie udało się sprawdzić aktualizacji: {error}",
+    "DataCraft {version} is available": "DataCraft {version} jest dostępny",
+    "DataCraft {version} is up to date": "DataCraft {version} jest aktualny",
+    "Later": "Później",
+    "Skip This Version": "Pomiń tę wersję",
+    "View Release": "Zobacz wydanie",
+    "You have {version}. Download it from the release page.": "Masz wersję {version}. Pobierz nową ze strony wydania.",
     "Joins the next enabled condition. Click to switch AND/OR.": "Łączy z następnym włączonym warunkiem. Kliknij, aby przełączyć AND/OR.",
     "Select a database in the explorer to browse its objects.": "Wybierz bazę danych w eksploratorze, aby przeglądać jej obiekty.",
     "Another save is in progress; try again when it finishes": "Trwa inny zapis; spróbuj ponownie, gdy się zakończy",
