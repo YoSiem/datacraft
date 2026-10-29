@@ -79,7 +79,9 @@ impl MySession {
             .stmt_cache_size(0);
         let ssl = SslOpts::default()
             .with_danger_accept_invalid_certs(cfg.trust_cert)
-            .with_danger_skip_domain_validation(cfg.trust_cert);
+            // Through an SSH tunnel the address is the tunnel's `127.0.0.1`, which the certificate
+            // can't name (mysql_async takes no separate TLS name); its chain is still checked.
+            .with_danger_skip_domain_validation(cfg.trust_cert || cfg.tunnel_host.is_some());
 
         let with_tls = base.clone().ssl_opts(ssl);
         let (conn, opts) = match open(with_tls.clone()).await {

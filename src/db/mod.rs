@@ -20,12 +20,15 @@ pub mod oracle;
 pub mod postgres;
 pub mod redis_db;
 pub mod snowflake;
+pub mod ssh;
 pub mod sqlite;
 pub mod url;
 pub mod views;
 pub mod users;
 
 use serde::{Deserialize, Serialize};
+use crate::i18n::{tr, trf};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -74,6 +77,12 @@ impl Driver {
     /// InfluxDB measurements nor Kusto tables.
     pub fn can_copy(self) -> bool {
         !matches!(self, Driver::Redis | Driver::InfluxDb | Driver::Kusto)
+    }
+
+    /// Engines reached over one TCP address, which an SSH tunnel can forward: not SQLite (a file)
+    /// nor the cloud services (Snowflake, Kusto), which are reached over the internet.
+    pub fn supports_ssh(self) -> bool {
+        !matches!(self, Driver::Sqlite | Driver::Snowflake | Driver::Kusto)
     }
 
     pub fn label(self) -> &'static str {
@@ -179,6 +188,12 @@ pub struct ConnectionConfig {
     /// into `properties`, never written back.
     #[serde(skip_serializing)]
     pub private_key_file: String,
+    /// SSH tab: the tunnel through a bastion host. Its password and passphrase go to the keychain.
+    pub ssh: ssh::SshSettings,
+    /// Set by the tunnel on the config it connects with: the database's own host, which TLS
+    /// checks the certificate against while the connection goes to `127.0.0.1`.
+    #[serde(skip)]
+    pub tunnel_host: Option<String>,
 }
 
 /// Driver properties that hold secrets (`token`, `private_key_file_pwd`, `password`…): their
@@ -252,6 +267,8 @@ impl ConnectionConfig {
             url_only: false,
             url_extra: String::new(),
             private_key_file: String::new(),
+            ssh: ssh::SshSettings::default(),
+            tunnel_host: None,
         }
     }
 
@@ -403,8 +420,123 @@ impl CancelHandle {
     }
 }
 
-/// Open session against a specific engine.
-pub enum Session {
+/// Open session: the engine's, and the SSH tunnel it goes through, kept open while it is.
+/// Derefs to the engine.
+pub struct Session {
+    engine: Engine,
+    _tunnel: Option<Arc<ssh::Tunnel>>,
+}
+
+impl std::ops::Deref for Session {
+    type Target = Engine;
+    fn deref(&self) -> &Engine {
+        &self.engine
+    }
+}
+
+impl std::ops::DerefMut for Session {
+    fn deref_mut(&mut self) -> &mut Engine {
+        &mut self.engine
+    }
+}
+
+impl Session {
+    pub async fn connect(cfg: &ConnectionConfig) -> anyhow::Result<Session> {
+        let tunnel = if ssh::tunnels(cfg) { Some(ssh::shared(cfg).await?) } else { None };
+        let engine = Self::open(&through(cfg, tunnel.as_deref()), cfg.read_only).await?;
+        Ok(Session { engine, _tunnel: tunnel })
+    }
+
+    /// Test Connection: the server's product and version. Through SSH, a tunnel of its own (so
+    /// the bastion's key and sign-in are checked again), named in the result.
+    pub async fn test(cfg: &ConnectionConfig) -> anyhow::Result<Option<String>> {
+        if !ssh::tunnels(cfg) {
+            let mut session = Self::connect(cfg).await?;
+            return Ok(session.server_version(cfg.driver).await);
+        }
+        let tunnel = ssh::private(cfg).await?;
+        let mut engine = Self::open(&through(cfg, Some(&tunnel)), cfg.read_only).await?;
+        let version = engine.server_version(cfg.driver).await.unwrap_or_else(|| tr("Succeeded").to_string());
+        Ok(Some(trf("{version} · through SSH {bastion}", &[("version", &version), ("bastion", &cfg.ssh.describe())])))
+    }
+
+    async fn open(cfg: &ConnectionConfig, read_only: bool) -> anyhow::Result<Engine> {
+        // "No auth": the engine's defaults (trust/peer auth…). Snowflake reads its properties.
+        let no_auth;
+        let cfg = if cfg.auth == AuthMode::NoAuth && cfg.driver != Driver::Snowflake {
+            no_auth = ConnectionConfig { user: String::new(), password: String::new(), ..cfg.clone() };
+            &no_auth
+        } else {
+            cfg
+        };
+        let mut engine = match cfg.driver {
+            Driver::Postgres => Engine::Postgres(postgres::PgSession::connect(cfg).await?),
+            Driver::Sqlite => Engine::Sqlite(sqlite::SqliteSession::connect(cfg).await?),
+            Driver::MsSql => Engine::MsSql(Box::new(mssql::MsSession::connect(cfg).await?)),
+            Driver::MySql | Driver::MariaDb => Engine::MySql(Box::new(mysql::MySession::connect(cfg).await?)),
+            Driver::Oracle => Engine::Oracle(Box::new(oracle::OraSession::connect(cfg).await?)),
+            Driver::Snowflake => Engine::Snowflake(Box::new(snowflake::SfSession::connect(cfg).await?)),
+            Driver::ClickHouse => Engine::ClickHouse(Box::new(clickhouse::ChSession::connect(cfg).await?)),
+            Driver::Redis => Engine::Redis(Box::new(redis_db::RedisSession::connect(cfg).await?)),
+            Driver::MongoDb => Engine::MongoDb(Box::new(mongo::MongoSession::connect(cfg).await?)),
+            Driver::InfluxDb => Engine::InfluxDb(Box::new(influx::InfluxSession::connect(cfg).await?)),
+            Driver::Kusto => Engine::Kusto(Box::new(kusto::KustoSession::connect(cfg).await?)),
+        };
+        // Read-only data sources are also enforced by the server where the engine allows it
+        // (SQLite opens the file read-only; SQL Server and Oracle rely on the app's checks).
+        if read_only {
+            let set = match cfg.driver {
+                Driver::Postgres => Some("SET default_transaction_read_only = on"),
+                Driver::MySql | Driver::MariaDb => Some("SET SESSION TRANSACTION READ ONLY"),
+                _ => None,
+            };
+            if let Some(set) = set {
+                engine.execute(set, 0).await?;
+            }
+        }
+        Ok(engine)
+    }
+
+    /// Qualified name quoted for the dialect, e.g. `"public"."users"` or `[dbo].[users]`.
+    pub fn quote_table(driver: Driver, schema: &str, table: &str) -> String {
+        match driver {
+            Driver::Postgres | Driver::Snowflake => format!("\"{}\".\"{}\"", schema.replace('"', "\"\""), table.replace('"', "\"\"")),
+            // No qualified names: a collection, a key pattern or a measurement, as is.
+            Driver::Redis | Driver::MongoDb | Driver::InfluxDb => table.to_string(),
+            // Kusto: the table of the request's database.
+            Driver::Kusto => Driver::Kusto.quote_ident(table),
+            Driver::Sqlite => format!("\"{}\"", table.replace('"', "\"\"")),
+            Driver::MsSql => format!("[{}].[{}]", schema.replace(']', "]]"), table.replace(']', "]]")),
+            // MySQL: the schema is the database.
+            Driver::MySql | Driver::MariaDb | Driver::Oracle => format!("{}.{}", driver.quote_ident(schema), driver.quote_ident(table)),
+            // ClickHouse: the schema is the database.
+            Driver::ClickHouse => format!("{}.{}", driver.quote_ident(schema), driver.quote_ident(table)),
+        }
+    }
+}
+
+/// The config the driver connects with: through a tunnel, its listener on `127.0.0.1`, and the
+/// database's host kept for TLS (`tunnel_host`).
+fn through<'a>(cfg: &'a ConnectionConfig, tunnel: Option<&ssh::Tunnel>) -> std::borrow::Cow<'a, ConnectionConfig> {
+    match tunnel {
+        None => std::borrow::Cow::Borrowed(cfg),
+        Some(t) => {
+            let mut c = cfg.clone();
+            // A scheme typed in the host field (InfluxDB's `https://…`) stays.
+            let host = cfg.host.trim();
+            c.host = match host.split_once("://") {
+                Some((scheme, _)) => format!("{scheme}://127.0.0.1"),
+                None => "127.0.0.1".into(),
+            };
+            c.tunnel_host = Some(ssh::bare_host(host).to_string());
+            c.port = t.port;
+            std::borrow::Cow::Owned(c)
+        }
+    }
+}
+
+/// The driver session of an engine.
+pub enum Engine {
     Postgres(postgres::PgSession),
     Sqlite(sqlite::SqliteSession),
     MsSql(Box<mssql::MsSession>),
@@ -419,97 +551,56 @@ pub enum Session {
     Kusto(Box<kusto::KustoSession>),
 }
 
-impl Session {
-    pub async fn connect(cfg: &ConnectionConfig) -> anyhow::Result<Session> {
-        // "No auth": the engine's defaults (trust/peer auth…). Snowflake reads its properties.
-        let no_auth;
-        let cfg = if cfg.auth == AuthMode::NoAuth && cfg.driver != Driver::Snowflake {
-            no_auth = ConnectionConfig { user: String::new(), password: String::new(), ..cfg.clone() };
-            &no_auth
-        } else {
-            cfg
-        };
-        let mut session = Self::open(cfg).await?;
-        // Read-only data sources are also enforced by the server where the engine allows it
-        // (SQLite opens the file read-only; SQL Server and Oracle rely on the app's checks).
-        if cfg.read_only {
-            let set = match cfg.driver {
-                Driver::Postgres => Some("SET default_transaction_read_only = on"),
-                Driver::MySql | Driver::MariaDb => Some("SET SESSION TRANSACTION READ ONLY"),
-                _ => None,
-            };
-            if let Some(set) = set {
-                session.execute(set, 0).await?;
-            }
-        }
-        Ok(session)
-    }
-
-    async fn open(cfg: &ConnectionConfig) -> anyhow::Result<Session> {
-        Ok(match cfg.driver {
-            Driver::Postgres => Session::Postgres(postgres::PgSession::connect(cfg).await?),
-            Driver::Sqlite => Session::Sqlite(sqlite::SqliteSession::connect(cfg).await?),
-            Driver::MsSql => Session::MsSql(Box::new(mssql::MsSession::connect(cfg).await?)),
-            Driver::MySql | Driver::MariaDb => Session::MySql(Box::new(mysql::MySession::connect(cfg).await?)),
-            Driver::Oracle => Session::Oracle(Box::new(oracle::OraSession::connect(cfg).await?)),
-            Driver::Snowflake => Session::Snowflake(Box::new(snowflake::SfSession::connect(cfg).await?)),
-            Driver::ClickHouse => Session::ClickHouse(Box::new(clickhouse::ChSession::connect(cfg).await?)),
-            Driver::Redis => Session::Redis(Box::new(redis_db::RedisSession::connect(cfg).await?)),
-            Driver::MongoDb => Session::MongoDb(Box::new(mongo::MongoSession::connect(cfg).await?)),
-            Driver::InfluxDb => Session::InfluxDb(Box::new(influx::InfluxSession::connect(cfg).await?)),
-            Driver::Kusto => Session::Kusto(Box::new(kusto::KustoSession::connect(cfg).await?)),
-        })
-    }
-
+impl Engine {
     /// Runs ONE statement (or a T-SQL batch) and returns one or more result sets.
     /// Each result set keeps at most `max_rows` rows.
     pub async fn execute(&mut self, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
         match self {
-            Session::Postgres(s) => s.execute(sql, max_rows).await,
-            Session::Sqlite(s) => s.execute(sql, max_rows).await,
-            Session::MsSql(s) => s.execute(sql, max_rows).await,
-            Session::MySql(s) => s.execute(sql, max_rows).await,
-            Session::Oracle(s) => s.execute(sql, max_rows).await,
-            Session::Snowflake(s) => s.execute(sql, max_rows).await,
-            Session::ClickHouse(s) => s.execute(sql, max_rows).await,
-            Session::Redis(s) => s.execute(sql, max_rows).await,
-            Session::MongoDb(s) => s.execute(sql, max_rows).await,
-            Session::InfluxDb(s) => s.execute(sql, max_rows).await,
-            Session::Kusto(s) => s.execute(sql, max_rows).await,
+            Engine::Postgres(s) => s.execute(sql, max_rows).await,
+            Engine::Sqlite(s) => s.execute(sql, max_rows).await,
+            Engine::MsSql(s) => s.execute(sql, max_rows).await,
+            Engine::MySql(s) => s.execute(sql, max_rows).await,
+            Engine::Oracle(s) => s.execute(sql, max_rows).await,
+            Engine::Snowflake(s) => s.execute(sql, max_rows).await,
+            Engine::ClickHouse(s) => s.execute(sql, max_rows).await,
+            Engine::Redis(s) => s.execute(sql, max_rows).await,
+            Engine::MongoDb(s) => s.execute(sql, max_rows).await,
+            Engine::InfluxDb(s) => s.execute(sql, max_rows).await,
+            Engine::Kusto(s) => s.execute(sql, max_rows).await,
         }
     }
 
     /// Database the session is connected to when opened.
     pub async fn current_database(&mut self) -> anyhow::Result<String> {
         match self {
-            Session::Postgres(s) => s.current_database().await,
-            Session::Sqlite(_) => Ok("main".into()),
-            Session::MsSql(s) => s.current_database().await,
-            Session::MySql(s) => s.current_database().await,
-            Session::Oracle(s) => s.current_database().await,
-            Session::Snowflake(s) => s.current_database().await,
-            Session::ClickHouse(s) => s.current_database().await,
-            Session::Redis(s) => s.current_database().await,
-            Session::MongoDb(s) => s.current_database().await,
-            Session::InfluxDb(s) => s.current_database().await,
-            Session::Kusto(s) => s.current_database().await,
+            Engine::Postgres(s) => s.current_database().await,
+            Engine::Sqlite(_) => Ok("main".into()),
+            Engine::MsSql(s) => s.current_database().await,
+            Engine::MySql(s) => s.current_database().await,
+            Engine::Oracle(s) => s.current_database().await,
+            Engine::Snowflake(s) => s.current_database().await,
+            Engine::ClickHouse(s) => s.current_database().await,
+            Engine::Redis(s) => s.current_database().await,
+            Engine::MongoDb(s) => s.current_database().await,
+            Engine::InfluxDb(s) => s.current_database().await,
+            Engine::Kusto(s) => s.current_database().await,
         }
     }
 
     /// Databases visible on the server (SQLite: just "main").
     pub async fn list_databases(&mut self) -> anyhow::Result<Vec<String>> {
         match self {
-            Session::Postgres(s) => s.list_databases().await,
-            Session::Sqlite(_) => Ok(vec!["main".into()]),
-            Session::MsSql(s) => s.list_databases().await,
-            Session::MySql(s) => s.list_databases().await,
-            Session::Oracle(s) => s.list_databases().await,
-            Session::Snowflake(s) => s.list_databases().await,
-            Session::ClickHouse(s) => s.list_databases().await,
-            Session::Redis(s) => s.list_databases().await,
-            Session::MongoDb(s) => s.list_databases().await,
-            Session::InfluxDb(s) => s.list_databases().await,
-            Session::Kusto(s) => s.list_databases().await,
+            Engine::Postgres(s) => s.list_databases().await,
+            Engine::Sqlite(_) => Ok(vec!["main".into()]),
+            Engine::MsSql(s) => s.list_databases().await,
+            Engine::MySql(s) => s.list_databases().await,
+            Engine::Oracle(s) => s.list_databases().await,
+            Engine::Snowflake(s) => s.list_databases().await,
+            Engine::ClickHouse(s) => s.list_databases().await,
+            Engine::Redis(s) => s.list_databases().await,
+            Engine::MongoDb(s) => s.list_databases().await,
+            Engine::InfluxDb(s) => s.list_databases().await,
+            Engine::Kusto(s) => s.list_databases().await,
         }
     }
 
@@ -522,14 +613,14 @@ impl Session {
     /// SQL Server and MySQL: `USE db`. A no-op on the other engines (each session is bound to one database).
     pub async fn use_database(&mut self, db: &str) -> anyhow::Result<()> {
         match self {
-            Session::MsSql(s) if !db.is_empty() => s.use_database(db).await,
-            Session::MySql(s) if !db.is_empty() => s.use_database(db).await,
-            Session::Snowflake(s) if !db.is_empty() => s.use_database(db).await,
-            Session::ClickHouse(s) if !db.is_empty() => s.use_database(db).await,
-            Session::Redis(s) if !db.is_empty() => s.use_database(db).await,
-            Session::MongoDb(s) if !db.is_empty() => s.use_database(db).await,
-            Session::InfluxDb(s) if !db.is_empty() => s.use_database(db).await,
-            Session::Kusto(s) if !db.is_empty() => s.use_database(db).await,
+            Engine::MsSql(s) if !db.is_empty() => s.use_database(db).await,
+            Engine::MySql(s) if !db.is_empty() => s.use_database(db).await,
+            Engine::Snowflake(s) if !db.is_empty() => s.use_database(db).await,
+            Engine::ClickHouse(s) if !db.is_empty() => s.use_database(db).await,
+            Engine::Redis(s) if !db.is_empty() => s.use_database(db).await,
+            Engine::MongoDb(s) if !db.is_empty() => s.use_database(db).await,
+            Engine::InfluxDb(s) if !db.is_empty() => s.use_database(db).await,
+            Engine::Kusto(s) if !db.is_empty() => s.use_database(db).await,
             _ => Ok(()),
         }
     }
@@ -540,20 +631,20 @@ impl Session {
     /// Returns the total number of modified rows.
     pub async fn apply_changes(&mut self, statements: &[String]) -> anyhow::Result<u64> {
         match self {
-            Session::Postgres(s) => s.apply_changes(statements).await,
-            Session::Sqlite(s) => s.apply_changes(statements).await,
-            Session::MsSql(s) => s.apply_changes(statements).await,
-            Session::MySql(s) => s.apply_changes(statements).await,
-            Session::Oracle(s) => s.apply_changes(statements).await,
-            Session::Snowflake(s) => s.apply_changes(statements).await,
+            Engine::Postgres(s) => s.apply_changes(statements).await,
+            Engine::Sqlite(s) => s.apply_changes(statements).await,
+            Engine::MsSql(s) => s.apply_changes(statements).await,
+            Engine::MySql(s) => s.apply_changes(statements).await,
+            Engine::Oracle(s) => s.apply_changes(statements).await,
+            Engine::Snowflake(s) => s.apply_changes(statements).await,
             // ClickHouse: only the editor's INSERTs (see `ChSession::apply_changes`).
-            Session::ClickHouse(s) => s.apply_changes(statements).await,
+            Engine::ClickHouse(s) => s.apply_changes(statements).await,
             // Their commands (not SQL) come from `redis_db::change_commands` / `mongo::change_command`.
-            Session::Redis(s) => s.apply_changes(statements).await,
-            Session::MongoDb(s) => s.apply_changes(statements).await,
+            Engine::Redis(s) => s.apply_changes(statements).await,
+            Engine::MongoDb(s) => s.apply_changes(statements).await,
             // Points are written with line protocol, which the data editor doesn't produce, and
             // Kusto ingests rows rather than editing them.
-            Session::InfluxDb(_) | Session::Kusto(_) => anyhow::bail!(crate::i18n::tr("Editing is not available for this engine")),
+            Engine::InfluxDb(_) | Engine::Kusto(_) => anyhow::bail!(crate::i18n::tr("Editing is not available for this engine")),
         }
     }
 
@@ -561,14 +652,14 @@ impl Session {
     /// the worker abandons the query and closes the session.
     pub fn cancel_handle(&self) -> Option<CancelHandle> {
         match self {
-            Session::Postgres(s) => Some(CancelHandle::Postgres(s.cancel_token())),
-            Session::Sqlite(s) => Some(CancelHandle::Sqlite(s.interrupt_handle())),
-            Session::MySql(s) => {
+            Engine::Postgres(s) => Some(CancelHandle::Postgres(s.cancel_token())),
+            Engine::Sqlite(s) => Some(CancelHandle::Sqlite(s.interrupt_handle())),
+            Engine::MySql(s) => {
                 let (opts, id) = s.cancel_target();
                 Some(CancelHandle::MySql(Box::new(opts), id))
             }
-            Session::Oracle(s) => Some(CancelHandle::Oracle(s.break_handle())),
-            Session::Snowflake(s) => Some(CancelHandle::Snowflake(s.cancel_handle())),
+            Engine::Oracle(s) => Some(CancelHandle::Oracle(s.break_handle())),
+            Engine::Snowflake(s) => Some(CancelHandle::Snowflake(s.cancel_handle())),
             _ => None,
         }
     }
@@ -576,20 +667,20 @@ impl Session {
     /// Runs the statements in ONE transaction (all or nothing), without the one-row rule of
     /// `apply_changes`. Returns the affected rows when the engine reports them.
     pub async fn run_transaction(&mut self, statements: &[String]) -> anyhow::Result<u64> {
-        if matches!(self, Session::Redis(_) | Session::MongoDb(_) | Session::InfluxDb(_) | Session::Kusto(_)) {
+        if matches!(self, Engine::Redis(_) | Engine::MongoDb(_) | Engine::InfluxDb(_) | Engine::Kusto(_)) {
             anyhow::bail!(crate::i18n::tr("Editing is not available for this engine"));
         }
-        if let Session::ClickHouse(s) = self {
+        if let Engine::ClickHouse(s) = self {
             // No transactions in ClickHouse: run the statements directly (each INSERT is
             // atomic on its own; there is no rollback to offer).
             return s.run_statements(statements).await;
         }
-        if let Session::Oracle(s) = self {
+        if let Engine::Oracle(s) = self {
             return s.run_transaction(statements).await;
         }
         let (begin, commit, rollback) = match self {
-            Session::MsSql(_) => ("BEGIN TRANSACTION", "COMMIT TRANSACTION", "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION"),
-            Session::MySql(_) => ("START TRANSACTION", "COMMIT", "ROLLBACK"),
+            Engine::MsSql(_) => ("BEGIN TRANSACTION", "COMMIT TRANSACTION", "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION"),
+            Engine::MySql(_) => ("START TRANSACTION", "COMMIT", "ROLLBACK"),
             _ => ("BEGIN", "COMMIT", "ROLLBACK"),
         };
         self.execute(begin, 0).await?;
@@ -613,33 +704,33 @@ impl Session {
     /// true if the connection has been lost (socket closed, protocol error...).
     pub fn is_closed(&self) -> bool {
         match self {
-            Session::Postgres(s) => s.is_closed(),
-            Session::Sqlite(_) => false,
-            Session::MsSql(s) => s.is_closed(),
-            Session::MySql(s) => s.is_closed(),
-            Session::Oracle(s) => s.is_closed(),
-            Session::Snowflake(s) => s.is_closed(),
-            Session::ClickHouse(s) => s.is_closed(),
-            Session::Redis(s) => s.is_closed(),
-            Session::MongoDb(s) => s.is_closed(),
-            Session::InfluxDb(_) | Session::Kusto(_) => false,
+            Engine::Postgres(s) => s.is_closed(),
+            Engine::Sqlite(_) => false,
+            Engine::MsSql(s) => s.is_closed(),
+            Engine::MySql(s) => s.is_closed(),
+            Engine::Oracle(s) => s.is_closed(),
+            Engine::Snowflake(s) => s.is_closed(),
+            Engine::ClickHouse(s) => s.is_closed(),
+            Engine::Redis(s) => s.is_closed(),
+            Engine::MongoDb(s) => s.is_closed(),
+            Engine::InfluxDb(_) | Engine::Kusto(_) => false,
         }
     }
 
     /// Schemas, tables/views and columns (no system objects).
     pub async fn introspect(&mut self) -> anyhow::Result<Vec<SchemaInfo>> {
         match self {
-            Session::Postgres(s) => s.introspect().await,
-            Session::Sqlite(s) => s.introspect().await,
-            Session::MsSql(s) => s.introspect().await,
-            Session::MySql(s) => s.introspect().await,
-            Session::Oracle(s) => s.introspect().await,
-            Session::Snowflake(s) => s.introspect().await,
-            Session::ClickHouse(s) => s.introspect().await,
-            Session::Redis(s) => s.introspect().await,
-            Session::MongoDb(s) => s.introspect().await,
-            Session::InfluxDb(s) => s.introspect().await,
-            Session::Kusto(s) => s.introspect().await,
+            Engine::Postgres(s) => s.introspect().await,
+            Engine::Sqlite(s) => s.introspect().await,
+            Engine::MsSql(s) => s.introspect().await,
+            Engine::MySql(s) => s.introspect().await,
+            Engine::Oracle(s) => s.introspect().await,
+            Engine::Snowflake(s) => s.introspect().await,
+            Engine::ClickHouse(s) => s.introspect().await,
+            Engine::Redis(s) => s.introspect().await,
+            Engine::MongoDb(s) => s.introspect().await,
+            Engine::InfluxDb(s) => s.introspect().await,
+            Engine::Kusto(s) => s.introspect().await,
         }
     }
 
@@ -647,10 +738,10 @@ impl Session {
     /// "PostgreSQL 16.4"…), or None when the server won't say.
     pub async fn server_version(&mut self, driver: Driver) -> Option<String> {
         match self {
-            Session::Redis(s) => return s.server_version().await,
-            Session::MongoDb(s) => return s.server_version().await,
-            Session::InfluxDb(s) => return s.server_version().await,
-            Session::Kusto(s) => return s.server_version().await,
+            Engine::Redis(s) => return s.server_version().await,
+            Engine::MongoDb(s) => return s.server_version().await,
+            Engine::InfluxDb(s) => return s.server_version().await,
+            Engine::Kusto(s) => return s.server_version().await,
             _ => {}
         }
         let sql = match driver {
@@ -674,22 +765,5 @@ impl Session {
             d => d.label(),
         };
         Some(format!("{product} {v}"))
-    }
-
-    /// Qualified name quoted for the dialect, e.g. `"public"."users"` or `[dbo].[users]`.
-    pub fn quote_table(driver: Driver, schema: &str, table: &str) -> String {
-        match driver {
-            Driver::Postgres | Driver::Snowflake => format!("\"{}\".\"{}\"", schema.replace('"', "\"\""), table.replace('"', "\"\"")),
-            // No qualified names: a collection, a key pattern or a measurement, as is.
-            Driver::Redis | Driver::MongoDb | Driver::InfluxDb => table.to_string(),
-            // Kusto: the table of the request's database.
-            Driver::Kusto => Driver::Kusto.quote_ident(table),
-            Driver::Sqlite => format!("\"{}\"", table.replace('"', "\"\"")),
-            Driver::MsSql => format!("[{}].[{}]", schema.replace(']', "]]"), table.replace(']', "]]")),
-            // MySQL: the schema is the database.
-            Driver::MySql | Driver::MariaDb | Driver::Oracle => format!("{}.{}", driver.quote_ident(schema), driver.quote_ident(table)),
-            // ClickHouse: the schema is the database.
-            Driver::ClickHouse => format!("{}.{}", driver.quote_ident(schema), driver.quote_ident(table)),
-        }
     }
 }
