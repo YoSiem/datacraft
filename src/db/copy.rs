@@ -8,7 +8,7 @@
 //! get their BSON type back from the source column's type.
 
 use super::subset::{self, ForeignKey, TableRows};
-use super::{Cell, ColumnInfo, ConnectionConfig, Driver, SchemaInfo, Session};
+use super::{Cell, ColumnInfo, ConnectionConfig, Driver, Engine, SchemaInfo, Session};
 use crate::edit::literal;
 use crate::i18n::{tr, trf};
 use crate::ui::create_dialog::{NewColumn, create_table_sql};
@@ -753,7 +753,7 @@ async fn read_documents(s: &mut Session, req: &CopyRequest) -> anyhow::Result<Ve
 /// cancel keeps the batches already inserted. Documents whose `_id` the collection already has
 /// are skipped. Returns the documents inserted.
 async fn write_documents(t: &mut Session, from: Driver, req: &CopyRequest, columns: &[ColumnInfo], rows: Vec<Vec<Cell>>) -> anyhow::Result<u64> {
-    let Session::MongoDb(m) = t else { anyhow::bail!(tr("Not available for this engine")) };
+    let Engine::MongoDb(m) = &mut **t else { anyhow::bail!(tr("Not available for this engine")) };
     if req.clear {
         m.execute(&format!("{}.deleteMany({{}})", mongo_collection(&req.target_table)), 0).await?;
     }

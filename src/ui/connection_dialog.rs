@@ -1,8 +1,9 @@
 //! DataGrip's "Data Sources and Drivers" window: the project's data sources on the left and the
-//! selected one's settings on the right (General / Options / Advanced tabs), with Test
+//! selected one's settings on the right (General / Options / SSH / Advanced tabs), with Test
 //! Connection, Cancel, Apply and OK at the bottom.
 
 use crate::db::url::{apply_jdbc_url, jdbc_url};
+use crate::db::ssh::{self, SshAuth};
 use crate::db::{AuthMode, ConnectionConfig, Driver, is_secret_property, snowflake};
 use crate::i18n::{tr, trf};
 use crate::ui::icons::{self, Ico};
@@ -40,6 +41,8 @@ impl Item {
 enum Tab {
     General,
     Options,
+    /// The SSH tunnel, for the engines that can go through one.
+    Ssh,
     Advanced,
 }
 
@@ -57,6 +60,8 @@ pub struct ConnectionDialog {
     url: String,
     /// Cancel / Escape with unapplied changes: asking before they are discarded.
     confirm_discard: bool,
+    /// The bastion's key was just trusted: Test Connection runs again.
+    retest: bool,
 }
 
 const LIST_WIDTH: f32 = 290.0;
@@ -82,7 +87,7 @@ impl ConnectionDialog {
 
     fn with(existing: &[ConnectionConfig]) -> Self {
         let items = existing.iter().map(|c| Item { cfg: c.clone(), saved: Some(c.clone()) }).collect();
-        Self { items, selected: 0, removed: Vec::new(), test: (0, TestState::Idle), error: None, tab: Tab::General, url: String::new(), confirm_discard: false }
+        Self { items, selected: 0, removed: Vec::new(), test: (0, TestState::Idle), error: None, tab: Tab::General, url: String::new(), confirm_discard: false, retest: false }
     }
 
     fn add(&mut self, id: u64, driver: Driver) {
@@ -96,8 +101,17 @@ impl ConnectionDialog {
     fn select(&mut self, i: usize) {
         self.selected = i;
         self.error = None;
-        if self.tab == Tab::Advanced && self.items.get(i).is_none_or(|it| it.cfg.driver != Driver::Snowflake) {
+        if self.items.get(i).is_none_or(|it| !Self::has_tab(it.cfg.driver, self.tab)) {
             self.tab = Tab::General;
+        }
+    }
+
+    /// Advanced is Snowflake's; SSH is for the engines a tunnel can reach.
+    fn has_tab(driver: Driver, tab: Tab) -> bool {
+        match tab {
+            Tab::General | Tab::Options => true,
+            Tab::Ssh => driver.supports_ssh(),
+            Tab::Advanced => driver == Driver::Snowflake,
         }
     }
 
@@ -160,6 +174,12 @@ impl ConnectionDialog {
             Driver::Sqlite => Ok(()),
             _ if cfg.host.trim().is_empty() => Err(tr("Host is required").into()),
             Driver::Snowflake => snowflake::credentials(cfg).map(|_| ()).map_err(|e| e.to_string()),
+            _ if ssh::tunnels(cfg) => match &cfg.ssh {
+                s if s.host.trim().is_empty() => Err(tr("The SSH host is required").into()),
+                s if s.user.trim().is_empty() => Err(tr("The SSH user is required").into()),
+                s if s.auth == SshAuth::KeyPair && s.key_file.trim().is_empty() => Err(tr("Choose the SSH private key file").into()),
+                _ => Ok(()),
+            },
             _ => Ok(()),
         }
     }
@@ -385,7 +405,10 @@ impl ConnectionDialog {
 
     /// Right pane: Name, the tabs and the selected tab.
     fn details(&mut self, ui: &mut Ui, p: &Palette) {
-        let snowflake = self.items[self.selected].cfg.driver == Driver::Snowflake;
+        let driver = self.items[self.selected].cfg.driver;
+        if !Self::has_tab(driver, self.tab) {
+            self.tab = Tab::General;
+        }
         egui::Grid::new("ds_name").num_columns(2).spacing([14.0, 10.0]).min_col_width(LABEL_WIDTH - 14.0).show(ui, |ui| {
             ui.label(tr("Name:"));
             text_field(ui, &mut self.items[self.selected].cfg.name, "");
@@ -394,11 +417,8 @@ impl ConnectionDialog {
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            let mut tabs = vec![(Tab::General, tr("General")), (Tab::Options, tr("Options"))];
-            if snowflake {
-                tabs.push((Tab::Advanced, tr("Advanced")));
-            }
-            for (tab, label) in tabs {
+            let tabs = [(Tab::General, tr("General")), (Tab::Options, tr("Options")), (Tab::Ssh, "SSH"), (Tab::Advanced, tr("Advanced"))];
+            for (tab, label) in tabs.into_iter().filter(|(t, _)| Self::has_tab(driver, *t)) {
                 if theme::tab(ui, self.tab == tab, None, label, false).0.clicked() {
                     self.tab = tab;
                 }
@@ -408,6 +428,7 @@ impl ConnectionDialog {
         egui::ScrollArea::vertical().id_salt("ds_form").auto_shrink([false, false]).show(ui, |ui| match self.tab {
             Tab::General => self.general(ui, p),
             Tab::Options => self.options(ui),
+            Tab::Ssh => self.ssh(ui, p),
             Tab::Advanced => self.properties(ui, p),
         });
     }
@@ -482,7 +503,7 @@ impl ConnectionDialog {
                 url_row(ui, &mut item.cfg, &mut self.url, p);
             }
         });
-        if item.cfg.driver != before && item.cfg.driver != Driver::Snowflake && self.tab == Tab::Advanced {
+        if item.cfg.driver != before && !Self::has_tab(item.cfg.driver, self.tab) {
             self.tab = Tab::General;
         }
     }
@@ -524,6 +545,96 @@ impl ConnectionDialog {
                 }
             }
         }
+    }
+
+    /// SSH tab: the tunnel through a bastion. The General tab's host and port stay the database's
+    /// address as the bastion sees it. A key the bastion showed and isn't trusted yet is offered
+    /// here with its fingerprint.
+    fn ssh(&mut self, ui: &mut Ui, p: &Palette) {
+        let s = &mut self.items[self.selected].cfg.ssh;
+        ui.checkbox(&mut s.enabled, tr("Use SSH tunnel"));
+        ui.add_space(10.0);
+        ui.add_enabled_ui(s.enabled, |ui| {
+            egui::Grid::new("ds_ssh").num_columns(2).spacing([14.0, 10.0]).min_col_width(LABEL_WIDTH - 14.0).show(ui, |ui| {
+                ui.label(tr("Host:"));
+                ui.horizontal(|ui| {
+                    let host_w = (ui.available_width() - 190.0).max(160.0);
+                    ui.add(egui::TextEdit::singleline(&mut s.host).hint_text("bastion.example.com").margin(egui::vec2(8.0, 5.0)).desired_width(host_w));
+                    ui.add_space(14.0);
+                    ui.label(tr("Port:"));
+                    let mut port = s.port();
+                    if ui.add_sized([ui.available_width(), 28.0], egui::DragValue::new(&mut port).range(1..=65535).speed(0)).changed() {
+                        s.port = port;
+                    }
+                });
+                ui.end_row();
+
+                ui.label(tr("User:"));
+                text_field(ui, &mut s.user, "");
+                ui.end_row();
+
+                let label = |a: SshAuth| match a {
+                    SshAuth::Password => tr("Password"),
+                    SshAuth::KeyPair => tr("Key pair"),
+                    SshAuth::Agent => tr("SSH agent"),
+                };
+                ui.label(tr("Authentication:"));
+                egui::ComboBox::from_id_salt("ds_ssh_auth").icon(chevron).selected_text(label(s.auth)).width(ui.available_width()).show_ui(ui, |ui| {
+                    for a in [SshAuth::Password, SshAuth::KeyPair, SshAuth::Agent] {
+                        ui.selectable_value(&mut s.auth, a, label(a));
+                    }
+                });
+                ui.end_row();
+
+                match s.auth {
+                    SshAuth::Password => {
+                        ui.label(tr("Password:"));
+                        password_field(ui, &mut s.password);
+                        ui.end_row();
+                    }
+                    SshAuth::KeyPair => {
+                        ui.label(tr("Private key file:"));
+                        ui.horizontal(|ui| {
+                            let w = (ui.available_width() - 90.0).max(160.0);
+                            ui.add(egui::TextEdit::singleline(&mut s.key_file).hint_text("~/.ssh/id_ed25519").margin(egui::vec2(8.0, 5.0)).desired_width(w));
+                            if ui.button(tr("Browse…")).clicked() {
+                                let mut picker = rfd::FileDialog::new().set_title(tr("SSH Private Key"));
+                                if let Some(dir) = dirs::home_dir().map(|h| h.join(".ssh")).filter(|d| d.is_dir()) {
+                                    picker = picker.set_directory(dir);
+                                }
+                                if let Some(file) = picker.pick_file() {
+                                    s.key_file = file.to_string_lossy().into_owned();
+                                }
+                            }
+                        });
+                        ui.end_row();
+                        ui.label(tr("Passphrase:"));
+                        password_field(ui, &mut s.passphrase);
+                        ui.end_row();
+                    }
+                    SshAuth::Agent => {}
+                }
+            });
+            ui.add_space(12.0);
+            ui.label(
+                RichText::new(tr("Host and port in General are the database's address as the SSH server reaches it (often localhost). Passwords and passphrases are kept in the system keychain."))
+                    .size(12.0)
+                    .color(p.muted),
+            );
+            if let Some(fingerprint) = ssh::unknown_key(s) {
+                ui.add_space(14.0);
+                ui.label(RichText::new(trf("The SSH server {host} isn't trusted yet. Its key:", &[("host", &s.host.trim())])).strong());
+                ui.add(egui::Label::new(RichText::new(&fingerprint).monospace()).selectable(true));
+                ui.label(RichText::new(tr("Compare it with the server's (ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub on the server) before trusting it.")).size(12.0).color(p.muted));
+                ui.add_space(4.0);
+                if ui.button(tr("Trust")).clicked() {
+                    match ssh::trust(s) {
+                        Ok(()) => self.retest = true,
+                        Err(e) => self.error = Some(format!("{e:#}")),
+                    }
+                }
+            }
+        });
     }
 
     /// Advanced tab: DataGrip's Name / Value table of user-defined driver properties. The last
@@ -611,7 +722,7 @@ impl ConnectionDialog {
         let testing = mine && matches!(self.test.1, TestState::Testing);
         let mut result = None;
         let link = ui.add_enabled(!testing, egui::Button::new(RichText::new(tr("Test Connection")).color(p.accent)).frame(false));
-        if link.clicked() {
+        if link.clicked() || std::mem::take(&mut self.retest) {
             match Self::validate(cfg) {
                 Ok(()) => {
                     self.error = None;
@@ -635,6 +746,10 @@ impl ConnectionDialog {
             }
             TestState::Done(Err(e)) => {
                 mark(ui, false, p);
+                // The bastion's key isn't trusted yet: the SSH tab shows it.
+                if ssh::tunnels(cfg) && ssh::unknown_key(&cfg.ssh).is_some() && self.tab != Tab::Ssh && ui.button(tr("Review SSH key")).clicked() {
+                    self.tab = Tab::Ssh;
+                }
                 let first = e.lines().next().unwrap_or(e);
                 ui.add(egui::Label::new(RichText::new(first).color(p.error)).truncate()).on_hover_text(e);
             }
@@ -668,6 +783,11 @@ fn mark(ui: &mut Ui, ok: bool, p: &Palette) {
 fn chevron(ui: &Ui, rect: Rect, _: &egui::style::WidgetVisuals, _open: bool) {
     let p = theme::pal(ui);
     icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(14.0, 14.0)), Ico::ChevronDown, p.muted, &p, true);
+}
+
+fn password_field(ui: &mut Ui, value: &mut String) -> egui::Response {
+    let hint = if value.is_empty() { tr("<empty>") } else { "" };
+    ui.add(egui::TextEdit::singleline(value).password(true).hint_text(hint).margin(egui::vec2(8.0, 5.0)).desired_width(f32::INFINITY))
 }
 
 fn text_field(ui: &mut Ui, value: &mut String, hint: &str) -> egui::Response {
@@ -837,6 +957,34 @@ mod tests {
     use egui_kittest::kittest::Queryable;
 
     #[test]
+    fn ssh_tab_and_its_checks() {
+        for d in Driver::ALL {
+            assert_eq!(ConnectionDialog::has_tab(d, Tab::Ssh), !matches!(d, Driver::Sqlite | Driver::Snowflake | Driver::Kusto), "{d:?}");
+        }
+        let mut cfg = ConnectionConfig::new(1, Driver::Postgres);
+        cfg.name = "db".into();
+        assert!(ConnectionDialog::validate(&cfg).is_ok());
+        cfg.ssh.enabled = true;
+        assert_eq!(ConnectionDialog::validate(&cfg).unwrap_err(), tr("The SSH host is required"));
+        cfg.ssh.host = "bastion".into();
+        assert_eq!(ConnectionDialog::validate(&cfg).unwrap_err(), tr("The SSH user is required"));
+        cfg.ssh.user = "deploy".into();
+        cfg.ssh.auth = SshAuth::KeyPair;
+        assert_eq!(ConnectionDialog::validate(&cfg).unwrap_err(), tr("Choose the SSH private key file"));
+        cfg.ssh.key_file = "~/.ssh/id_ed25519".into();
+        assert!(ConnectionDialog::validate(&cfg).is_ok());
+
+        // Switching to an engine without the tab leaves it.
+        let mut dialog = ConnectionDialog::edit(1, &[cfg]);
+        dialog.tab = Tab::Ssh;
+        let mut h = harness(dialog);
+        h.get_by_label("Use SSH tunnel");
+        ConnectionDialog::change_driver(&mut h.state_mut().items[0].cfg, Driver::Sqlite);
+        h.run_steps(2);
+        assert!(h.state().tab == Tab::General);
+    }
+
+    #[test]
     fn switching_to_kusto_and_back() {
         let mut cfg = ConnectionConfig::new(1, Driver::Postgres);
         ConnectionDialog::change_driver(&mut cfg, Driver::Kusto);
@@ -909,6 +1057,20 @@ mod tests {
         render("snowflake_light", false, ConnectionDialog::edit(3, &list), |_| {});
         render("postgres_general", true, ConnectionDialog::edit(1, &list), |_| {});
         render("new_url_only", true, ConnectionDialog::new_connection(9, &list), |d| d.items.last_mut().unwrap().cfg.url_only = true);
+        let mut tunneled = list.clone();
+        tunneled[0].ssh = ssh::SshSettings {
+            enabled: true,
+            host: "bastion.example.com".into(),
+            user: "deploy".into(),
+            auth: SshAuth::KeyPair,
+            key_file: "~/.ssh/id_ed25519".into(),
+            ..Default::default()
+        };
+        render("postgres_ssh", true, ConnectionDialog::edit(1, &tunneled), |d| {
+            d.tab = Tab::Ssh;
+            d.test = (1, TestState::Done(Ok(Some("PostgreSQL 17.2 · through SSH deploy@bastion.example.com".into()))));
+        });
+        render("postgres_ssh_light", false, ConnectionDialog::edit(1, &tunneled), |d| d.tab = Tab::Ssh);
     }
 
     fn harness(dialog: ConnectionDialog) -> egui_kittest::Harness<'static, ConnectionDialog> {

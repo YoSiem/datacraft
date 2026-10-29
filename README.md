@@ -143,6 +143,15 @@ PostgreSQL, MySQL and MariaDB backups require their native dump utilities. SQLit
 | InfluxDB 2 | HTTP API (port 8086, HTTPS with "Use TLS") with an API token and an organization; Flux and InfluxQL consoles, buckets and measurements with their tags and fields, and read-only result grids filtered by a Flux predicate and a time range (the last hour by default). InfluxQL needs InfluxDB 2.4+ or a DBRP mapping |
 | Kusto / Azure Data Explorer | REST API over HTTPS, signed in with the Azure CLI's account (`az login`), an Entra ID application (client ID and secret), or no authentication for the Kusto emulator; KQL console with control commands (requests separated by blank lines, as in Kusto Explorer), databases with their tables and materialized views, and read-only result grids filtered and sorted with KQL. Read-only connections are also enforced by the server |
 
+### SSH tunnels
+
+Every engine reached over TCP (all but SQLite, Snowflake and Kusto) can connect through a bastion host. Tick **Use SSH tunnel** in the data source's **SSH** tab and give the bastion's host, port and user, then sign in with a password, a private key (OpenSSH or PEM, with its passphrase) or the running SSH agent. The host and port in **General** stay the database's address as the bastion reaches it, often `localhost`.
+
+- The first time a bastion is reached, Test Connection shows its key fingerprint and asks before trusting it. Keys already in `~/.ssh/known_hosts` are trusted, others go to DataCraft's own `ssh_known_hosts`, and a bastion whose key changed is refused, naming both fingerprints.
+- The sessions of a data source share one SSH connection, with keepalives every 30 seconds. If it drops, the next query opens it again.
+- With TLS, the certificate is still checked against the database's own host name for SQL Server, ClickHouse and InfluxDB. MySQL and MongoDB check the certificate chain but not the name, which can't match the tunnel's local address. A replica set or `mongodb+srv` address can't be used through a tunnel: point it at one server.
+- SSH passwords and passphrases are kept in the system keychain, like database passwords.
+
 Support varies by engine, server version and account privileges. [Oracle Instant Client](https://www.oracle.com/database/technologies/instant-client.html) must be installed separately for Oracle connections.
 
 ## Designed for the desktop

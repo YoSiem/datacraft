@@ -79,18 +79,24 @@ impl InfluxSession {
         if cfg.password.trim().is_empty() {
             bail!(tr("An API token is required"));
         }
-        let http = reqwest::Client::builder()
+        let mut base = base_url(cfg);
+        let mut builder = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             // No overall timeout: a long query is stopped from the app (dropping the request
             // cancels it on the server).
             .tcp_keepalive(Duration::from_secs(60))
             .user_agent(format!("DataCraft/{}", env!("CARGO_PKG_VERSION")))
-            .tls_danger_accept_invalid_certs(flag(cfg, "tls_insecure"))
-            .build()
-            .map_err(http_error)?;
+            .tls_danger_accept_invalid_certs(flag(cfg, "tls_insecure"));
+        // HTTPS through an SSH tunnel: the server's own name (for its certificate), resolved to
+        // the tunnel's listener; the URL's port is the listener's.
+        if let Some(name) = cfg.tunnel_host.as_deref().filter(|_| base.starts_with("https://")) {
+            base = format!("https://{name}:{}", cfg.port);
+            builder = builder.resolve(name, std::net::SocketAddr::from(([127, 0, 0, 1], cfg.port)));
+        }
+        let http = builder.build().map_err(http_error)?;
         let mut session = Self {
             http,
-            base: base_url(cfg),
+            base,
             token: cfg.password.trim().to_string(),
             org: cfg.user.trim().to_string(),
             bucket: cfg.database.trim().to_string(),

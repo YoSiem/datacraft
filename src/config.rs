@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 const KEYCHAIN_SERVICE: &str = "DataCraft";
 
-fn data_dir() -> PathBuf {
+pub(crate) fn data_dir() -> PathBuf {
     dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("DataCraft")
 }
 
@@ -22,6 +22,18 @@ fn keychain_entry(id: u64) -> Option<keyring::Entry> {
 /// Secret driver properties of a connection, as a JSON object `{name: value}`.
 fn properties_entry(id: u64) -> Option<keyring::Entry> {
     keyring::Entry::new(KEYCHAIN_SERVICE, &format!("connection-{id}-properties")).ok()
+}
+
+/// The SSH tunnel's password and key passphrase, as a JSON object.
+fn ssh_entry(id: u64) -> Option<keyring::Entry> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, &format!("connection-{id}-ssh")).ok()
+}
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct SshSecrets {
+    password: String,
+    passphrase: String,
 }
 
 pub fn load_connections() -> Vec<ConnectionConfig> {
@@ -56,6 +68,11 @@ pub fn load_connections() -> Vec<ConnectionConfig> {
             .and_then(|json| serde_json::from_str(&json).ok())
             .unwrap_or_default();
         fill_secret_properties(c, &secrets);
+        if c.ssh.enabled
+            && let Some(ssh) = ssh_entry(c.id).and_then(|e| e.get_password().ok()).and_then(|json| serde_json::from_str::<SshSecrets>(&json).ok())
+        {
+            (c.ssh.password, c.ssh.passphrase) = (ssh.password, ssh.passphrase);
+        }
     }
     if leaked && let Err(e) = save_connections(&list) {
         eprintln!("could not rewrite connections.json without its secrets: {e:#}");
@@ -91,6 +108,9 @@ pub fn store_secrets(cfg: &ConnectionConfig) {
         cfg.secret_properties().into_iter().map(|(k, v)| (k.trim().to_string(), v)).collect();
     let json = if secrets.is_empty() { String::new() } else { serde_json::to_string(&secrets).unwrap_or_default() };
     store(properties_entry(cfg.id), &json);
+    let ssh = SshSecrets { password: cfg.ssh.password.clone(), passphrase: cfg.ssh.passphrase.clone() };
+    let json = if cfg.ssh.has_secrets() { serde_json::to_string(&ssh).unwrap_or_default() } else { String::new() };
+    store(ssh_entry(cfg.id), &json);
 }
 
 fn store(entry: Option<keyring::Entry>, value: &str) {
@@ -119,7 +139,7 @@ pub fn masking_key() -> String {
 }
 
 pub fn delete_secrets(id: u64) {
-    for entry in [keychain_entry(id), properties_entry(id)].into_iter().flatten() {
+    for entry in [keychain_entry(id), properties_entry(id), ssh_entry(id)].into_iter().flatten() {
         let _ = entry.delete_credential();
     }
 }
@@ -147,5 +167,26 @@ mod tests {
         let secrets = cfg.secret_properties().into_iter().collect();
         fill_secret_properties(&mut loaded, &secrets);
         assert_eq!(loaded.properties, cfg.properties);
+    }
+
+    #[test]
+    fn ssh_secrets_never_reach_the_file() {
+        let mut cfg = ConnectionConfig::new(2, Driver::Postgres);
+        cfg.ssh = crate::db::ssh::SshSettings {
+            enabled: true,
+            host: "bastion.example".into(),
+            user: "deploy".into(),
+            key_file: "~/.ssh/id_ed25519".into(),
+            password: "SSH-PASSWORD".into(),
+            passphrase: "SSH-PASSPHRASE".into(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg.without_secrets()).unwrap();
+        assert!(!json.contains("SSH-PASSWORD") && !json.contains("SSH-PASSPHRASE"), "{json}");
+        let loaded: ConnectionConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!((loaded.ssh.host.as_str(), loaded.ssh.key_file.as_str()), ("bastion.example", "~/.ssh/id_ed25519"));
+        // Files from before the SSH tab load without one.
+        let old: ConnectionConfig = serde_json::from_str(r#"{"id": 3, "driver": "Postgres", "host": "db"}"#).unwrap();
+        assert!(!old.ssh.enabled);
     }
 }

@@ -553,10 +553,7 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             }
         }
         Request::Test(cfg) => {
-            let result = match Session::connect(&cfg).await {
-                Ok(mut session) => Ok(session.server_version(cfg.driver).await),
-                Err(e) => Err(format!("{e:#}")),
-            };
+            let result = Session::test(&cfg).await.map_err(|e| format!("{e:#}"));
             vec![Response::TestResult { conn: cfg.id, result }]
         }
         Request::Disconnect(conn) => {

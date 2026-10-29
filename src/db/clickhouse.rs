@@ -121,7 +121,8 @@ async fn connect_client(cfg: &ConnectionConfig) -> anyhow::Result<Client> {
     };
     let connected = if tls {
         let connector = tls_connector(property_on(cfg, "tls_insecure"))?;
-        let name = ServerName::try_from(host.to_string())
+        // Through an SSH tunnel, the certificate is checked against the database's own host.
+        let name = ServerName::try_from(cfg.tunnel_host.clone().unwrap_or_else(|| host.to_string()))
             .map_err(|_| anyhow!(trf("“{host}” is not a valid server name for TLS", &[("host", &host)])))?;
         Client::connect_tls((host, port), options, name, &connector).await
     } else {
