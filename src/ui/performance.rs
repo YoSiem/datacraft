@@ -37,7 +37,10 @@ pub struct Adapter {
 
 pub struct Performance {
     pub mode: RenderMode,
+    /// The Settings checkbox (persisted).
     pub show_stats: bool,
+    /// `DATACRAFT_FPS=1`: statistics for this run only, never persisted.
+    env_stats: bool,
     pub adapter: Option<Adapter>,
     /// Running in a Remote Desktop session.
     pub remote: bool,
@@ -62,8 +65,18 @@ impl Performance {
                 name: info.name,
             }
         });
-        let show_stats = show_stats || std::env::var("DATACRAFT_FPS").is_ok_and(|v| v == "1");
-        Self { mode, show_stats, adapter, remote: remote_session(), applied: None, last_frame: None, slept: Duration::ZERO, prev_slept: Duration::ZERO, frames: VecDeque::new() }
+        Self {
+            mode,
+            show_stats,
+            env_stats: std::env::var("DATACRAFT_FPS").is_ok_and(|v| v == "1"),
+            adapter,
+            remote: remote_session(),
+            applied: None,
+            last_frame: None,
+            slept: Duration::ZERO,
+            prev_slept: Duration::ZERO,
+            frames: VecDeque::new(),
+        }
     }
 
     /// What `Auto` resolves to on this machine.
@@ -79,12 +92,13 @@ impl Performance {
         }
     }
 
-    /// Whether the style must be (re)applied: the mode changed or the theme was reapplied.
-    pub fn needs_style(&self, theme_reapplied: bool) -> bool {
-        theme_reapplied || self.applied != Some(self.low_power())
+    /// The low-power state changed since [`Self::apply_style`]: the theme must be reapplied
+    /// (it restores the shadows) and this style on top of it.
+    pub fn style_outdated(&self) -> bool {
+        self.applied != Some(self.low_power())
     }
 
-    /// Applies the low-power style on top of the theme (call it after `theme::apply`).
+    /// Applies the low-power style on top of the theme (call it right after `theme::apply`).
     pub fn apply_style(&mut self, ctx: &egui::Context) {
         let low = self.low_power();
         let defaults = egui::Style::default();
@@ -160,7 +174,7 @@ impl Performance {
     /// Frame statistics in the bottom-right corner (Settings, or `DATACRAFT_FPS=1`).
     /// `frame_time` is eframe's `cpu_usage`: the previous frame, painting included.
     pub fn stats_overlay(&self, ctx: &egui::Context, frame_time: Option<f32>) {
-        if !self.show_stats {
+        if !self.show_stats && !self.env_stats {
             return;
         }
         let adapter = self.adapter.as_ref().map_or("?".to_string(), |a| format!("{} ({})", a.name, a.backend));
@@ -194,9 +208,20 @@ impl Performance {
     }
 }
 
-/// Remote Desktop sets `SESSIONNAME` to `RDP-Tcp#N` (`Console` on the local screen).
+#[cfg(windows)]
 fn remote_session() -> bool {
-    cfg!(target_os = "windows") && std::env::var("SESSIONNAME").is_ok_and(|s| s.to_ascii_uppercase().starts_with("RDP"))
+    const SM_REMOTESESSION: i32 = 0x1000;
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn GetSystemMetrics(index: i32) -> i32;
+    }
+    // SAFETY: takes an integer and returns one; no pointers or preconditions.
+    unsafe { GetSystemMetrics(SM_REMOTESESSION) != 0 }
+}
+
+#[cfg(not(windows))]
+fn remote_session() -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -207,6 +232,7 @@ mod tests {
         Performance {
             mode,
             show_stats: false,
+            env_stats: false,
             adapter: Some(Adapter { name: "Microsoft Basic Render Driver".into(), backend: "Dx12".into(), software }),
             remote,
             applied: None,
@@ -224,6 +250,26 @@ mod tests {
         assert!(!perf(RenderMode::Auto, false, false).low_power());
         assert!(perf(RenderMode::LowPower, false, false).low_power());
         assert!(!perf(RenderMode::Full, true, true).low_power());
+    }
+
+    #[test]
+    fn leaving_low_power_restores_the_theme_style() {
+        let ctx = egui::Context::default();
+        let mut perf = perf(RenderMode::LowPower, true, false);
+        crate::ui::theme::apply(&ctx, true);
+        let themed = ctx.global_style();
+        perf.apply_style(&ctx);
+        assert_eq!(ctx.global_style().visuals.window_shadow, Shadow::NONE);
+        assert_eq!(ctx.global_style().animation_time, 0.0);
+        assert!(!perf.style_outdated());
+
+        perf.mode = RenderMode::Full;
+        assert!(perf.style_outdated());
+        crate::ui::theme::apply(&ctx, true);
+        perf.apply_style(&ctx);
+        assert_eq!(ctx.global_style().visuals.window_shadow, themed.visuals.window_shadow);
+        assert_eq!(ctx.global_style().animation_time, themed.animation_time);
+        assert!(!perf.style_outdated());
     }
 
     #[test]

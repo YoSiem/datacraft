@@ -7,7 +7,7 @@ Both costs grow with the number of frames drawn.
 
 At startup DataCraft reads the adapter wgpu selected. **Settings → Rendering** shows it,
 marks a software adapter as "software (CPU)" and notes a Remote Desktop session
-(`SESSIONNAME` starting with `RDP`).
+(`GetSystemMetrics(SM_REMOTESESSION)`).
 
 | Mode | Behavior |
 | --- | --- |
@@ -29,4 +29,5 @@ is unchanged. MSAA and the depth buffer are already off in every mode.
 **Show frame statistics** in Settings, or `DATACRAFT_FPS=1`, adds an overlay with the
 frames drawn in the last second, the previous frame's time (painting included, frame-cap
 wait excluded), the active mode and the adapter. Use it to compare modes on a server.
-The mode and the overlay setting are remembered between sessions.
+The mode and the Settings checkbox are remembered between sessions; `DATACRAFT_FPS=1`
+applies to that run only.

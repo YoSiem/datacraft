@@ -3815,12 +3815,9 @@ impl eframe::App for DataCraftApp {
             ctx.set_zoom_factor(self.zoom);
             self.applied_zoom = Some(self.zoom);
         }
-        let theme_changed = self.applied_dark != Some(self.dark);
-        if theme_changed {
+        if self.applied_dark != Some(self.dark) || self.perf.style_outdated() {
             theme::apply(ctx, self.dark);
             self.applied_dark = Some(self.dark);
-        }
-        if self.perf.needs_style(theme_changed) {
             self.perf.apply_style(ctx);
         }
     }
