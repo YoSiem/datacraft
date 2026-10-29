@@ -333,6 +333,7 @@
     "; (semicolon)": "; (セミコロン)",
     "| (pipe)": "| (パイプ)",
     "Record View": "レコードビュー",
+    "View Value": "値を表示",
     "Previous row": "前の行",
     "Next row": "次の行",
     "Row {n} of {total}": "行 {n} / {total}",
