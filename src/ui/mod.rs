@@ -20,6 +20,7 @@ pub mod object_browser;
 pub mod object_organization;
 pub mod results;
 pub mod schema_search;
+pub mod script_dialog;
 pub mod theme;
 pub mod view_dialog;
 pub mod user_dialog;
