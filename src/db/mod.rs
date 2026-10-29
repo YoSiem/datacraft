@@ -21,13 +21,14 @@ pub mod postgres;
 pub mod redis_db;
 pub mod snowflake;
 pub mod ssh;
+pub mod tls;
 pub mod sqlite;
 pub mod url;
 pub mod views;
 pub mod users;
 
 use serde::{Deserialize, Serialize};
-use crate::i18n::{tr, trf};
+use crate::i18n::trf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -190,6 +191,9 @@ pub struct ConnectionConfig {
     pub private_key_file: String,
     /// SSH tab: the tunnel through a bastion host. Its password and passphrase go to the keychain.
     pub ssh: ssh::SshSettings,
+    /// SSL part of the SSH/SSL tab (PostgreSQL, MySQL, MariaDB). The key passphrase goes to the
+    /// keychain.
+    pub tls: tls::TlsSettings,
     /// Set by the tunnel on the config it connects with: the database's own host, which TLS
     /// checks the certificate against while the connection goes to `127.0.0.1`.
     #[serde(skip)]
@@ -268,6 +272,7 @@ impl ConnectionConfig {
             url_extra: String::new(),
             private_key_file: String::new(),
             ssh: ssh::SshSettings::default(),
+            tls: tls::TlsSettings::default(),
             tunnel_host: None,
         }
     }
@@ -385,7 +390,7 @@ pub(crate) fn not_single_row(n: u64, stmt: &str) -> anyhow::Error {
 /// Cancels the query a session is running, from outside that session.
 #[derive(Clone)]
 pub enum CancelHandle {
-    Postgres(tokio_postgres::CancelToken),
+    Postgres(tokio_postgres::CancelToken, postgres::PgTls),
     Sqlite(std::sync::Arc<rusqlite::InterruptHandle>),
     /// MySQL / MariaDB: `KILL QUERY <thread id>` from a second connection.
     MySql(Box<mysql_async::OptsBuilder>, u32),
@@ -398,7 +403,7 @@ pub enum CancelHandle {
 impl CancelHandle {
     pub async fn cancel(&self) -> anyhow::Result<()> {
         match self {
-            CancelHandle::Postgres(t) => t.cancel_query(tokio_postgres::NoTls).await.map_err(anyhow::Error::from),
+            CancelHandle::Postgres(t, tls) => t.cancel_query(tls.clone()).await.map_err(anyhow::Error::from),
             CancelHandle::Sqlite(h) => {
                 h.interrupt();
                 Ok(())
@@ -450,14 +455,18 @@ impl Session {
     /// Test Connection: the server's product and version. Through SSH, a tunnel of its own (so
     /// the bastion's key and sign-in are checked again), named in the result.
     pub async fn test(cfg: &ConnectionConfig) -> anyhow::Result<Option<String>> {
-        if !ssh::tunnels(cfg) {
-            let mut session = Self::connect(cfg).await?;
-            return Ok(session.server_version(cfg.driver).await);
+        let tunnel = if ssh::tunnels(cfg) { Some(ssh::private(cfg).await?) } else { None };
+        let mut engine = Self::open(&through(cfg, tunnel.as_ref()), cfg.read_only).await?;
+        let version = engine.server_version(cfg.driver).await;
+        let mut parts: Vec<String> = version.into_iter().collect();
+        // The TLS version and cipher, as Test Connection names them in DataGrip.
+        if let Some(tls) = engine.tls_description().await {
+            parts.push(tls);
         }
-        let tunnel = ssh::private(cfg).await?;
-        let mut engine = Self::open(&through(cfg, Some(&tunnel)), cfg.read_only).await?;
-        let version = engine.server_version(cfg.driver).await.unwrap_or_else(|| tr("Succeeded").to_string());
-        Ok(Some(trf("{version} · through SSH {bastion}", &[("version", &version), ("bastion", &cfg.ssh.describe())])))
+        if tunnel.is_some() {
+            parts.push(trf("through SSH {bastion}", &[("bastion", &cfg.ssh.describe())]));
+        }
+        Ok((!parts.is_empty()).then(|| parts.join(" · ")))
     }
 
     async fn open(cfg: &ConnectionConfig, read_only: bool) -> anyhow::Result<Engine> {
@@ -648,11 +657,23 @@ impl Engine {
         }
     }
 
+    /// The connection's TLS version and cipher (PostgreSQL, MySQL, MariaDB), None when plain.
+    pub async fn tls_description(&mut self) -> Option<String> {
+        match self {
+            Engine::Postgres(s) => s.tls_description().await,
+            Engine::MySql(s) => s.tls_description().await,
+            _ => None,
+        }
+    }
+
     /// Native way to cancel this session's running query, if the engine has one. Without it
     /// the worker abandons the query and closes the session.
     pub fn cancel_handle(&self) -> Option<CancelHandle> {
         match self {
-            Engine::Postgres(s) => Some(CancelHandle::Postgres(s.cancel_token())),
+            Engine::Postgres(s) => {
+                let (token, tls) = s.cancel_token();
+                Some(CancelHandle::Postgres(token, tls))
+            }
             Engine::Sqlite(s) => Some(CancelHandle::Sqlite(s.interrupt_handle())),
             Engine::MySql(s) => {
                 let (opts, id) = s.cancel_target();

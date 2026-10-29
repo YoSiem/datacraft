@@ -75,6 +75,8 @@ strip = true
 
 [dev-dependencies]
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }
+# Certificates for the TLS tests (a CA, server and client certificates made in the test).
+rcgen = { version = "0.14.10", default-features = false, features = ["aws_lc_rs", "pem"] }
 
 [build-dependencies]
 # Native Windows icon resources, including MSVC and cross-compiled GNU/ARM64 builds.

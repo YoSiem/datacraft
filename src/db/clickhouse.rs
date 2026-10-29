@@ -12,10 +12,8 @@ use futures_util::TryStreamExt;
 use nativeclick::{Client, ClientOptions, NativeclickError, Type, Value};
 use rustls_platform_verifier::ConfigVerifierExt;
 use tokio_rustls::TlsConnector;
-use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use tokio_rustls::rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
-use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-use tokio_rustls::rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
+use tokio_rustls::rustls::ClientConfig;
+use tokio_rustls::rustls::pki_types::ServerName;
 
 use super::{Cell, ColumnInfo, ConnectionConfig, ObjectKind, ResultSet, SchemaInfo, TableInfo};
 use crate::i18n::{tr, trf};
@@ -47,52 +45,12 @@ pub fn uses_tls(cfg: &ConnectionConfig) -> bool {
     property_on(cfg, "tls")
 }
 
-/// Certificate check switched off (`tls_insecure`, "Trust server certificate"): any certificate
-/// is accepted, but the handshake signatures are still verified.
-#[derive(Debug)]
-struct AcceptAnyCertificate(Arc<CryptoProvider>);
-
-impl ServerCertVerifier for AcceptAnyCertificate {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: UnixTime,
-    ) -> Result<ServerCertVerified, tokio_rustls::rustls::Error> {
-        Ok(ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
-        verify_tls12_signature(message, cert, dss, &self.0.signature_verification_algorithms)
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
-        verify_tls13_signature(message, cert, dss, &self.0.signature_verification_algorithms)
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.0.signature_verification_algorithms.supported_schemes()
-    }
-}
-
 /// TLS client: certificates checked against the system's trust store (like Snowflake's HTTPS),
 /// unless `insecure`.
 fn tls_connector(insecure: bool) -> anyhow::Result<TlsConnector> {
     let config = if insecure {
         let builder = ClientConfig::builder();
-        let verifier = AcceptAnyCertificate(builder.crypto_provider().clone());
+        let verifier = super::tls::AcceptAnyCertificate(builder.crypto_provider().clone());
         builder.dangerous().with_custom_certificate_verifier(Arc::new(verifier)).with_no_client_auth()
     } else {
         ClientConfig::with_platform_verifier()?

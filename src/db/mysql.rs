@@ -5,8 +5,9 @@
 //! formatted the MySQL way (dates `2026-10-16 12:30:00`, exact decimals...). Only binary values
 //! (BLOB, BINARY, geometry) are turned into a hex preview and BIT into a number.
 //!
-//! TLS: TLS is attempted first (certificate not validated when `trust_cert`); if the server does
-//! not support it (typical local dev server) the connection is retried in plain text.
+//! TLS follows the data source's SSL settings (`tls::TlsSettings`). With the default, Prefer, TLS
+//! is attempted first without checking the certificate, and a server without it (typical local
+//! dev server) gets a plain connection.
 //!
 //! `list_databases` hides `information_schema` and `performance_schema` (read-only catalogs that
 //! are rarely browsed) and leaves `mysql` and `sys` at the end of the list.
@@ -16,8 +17,9 @@ use std::time::{Duration, Instant};
 use anyhow::anyhow;
 use mysql_async::consts::ColumnType;
 use mysql_async::prelude::Queryable;
-use mysql_async::{Conn, DriverError, OptsBuilder, SslOpts, Value};
+use mysql_async::{ClientIdentity, Conn, DriverError, OptsBuilder, SslOpts, Value};
 
+use super::tls::{self, TlsMode};
 use super::{Cell, ColumnInfo, ConnectionConfig, ObjectKind, ResultSet, SchemaInfo, TableInfo};
 use crate::db::sqlite::hex_preview;
 use crate::i18n::{tr, trf};
@@ -59,6 +61,44 @@ fn breaks_connection(e: &mysql_async::Error) -> bool {
     }
 }
 
+/// The connection's TLS from the data source's SSL settings; None for Disable.
+fn tls_options(cfg: &ConnectionConfig) -> anyhow::Result<Option<SslOpts>> {
+    let t = &cfg.tls;
+    let mut ssl = SslOpts::default();
+    match t.mode {
+        TlsMode::Disable => return Ok(None),
+        TlsMode::Prefer | TlsMode::Require => {
+            ssl = ssl.with_danger_accept_invalid_certs(true).with_danger_skip_domain_validation(true);
+        }
+        TlsMode::VerifyCa | TlsMode::VerifyFull => {
+            if !t.ca_file.trim().is_empty() {
+                // Read now: the file is checked on every connect, and a missing one says so.
+                tls::certificates(&t.ca_file)?;
+                let pem = std::fs::read(tls::path(&t.ca_file))?;
+                ssl = ssl.with_root_certs(vec![pem.into()]).with_disable_built_in_roots(true);
+            }
+            if t.mode == TlsMode::VerifyCa {
+                ssl = ssl.with_danger_skip_domain_validation(true);
+            } else if let Some(name) = &cfg.tunnel_host {
+                // Through an SSH tunnel: the certificate is for the database's host, not 127.0.0.1.
+                ssl = ssl.with_danger_tls_hostname_override(Some(name.clone()));
+            }
+        }
+    }
+    match (t.cert_file.trim().is_empty(), t.key_file.trim().is_empty()) {
+        (true, true) => {}
+        (false, false) => {
+            tls::certificates(&t.cert_file)?;
+            let cert = std::fs::read(tls::path(&t.cert_file))?;
+            let key = tls::private_key_pem(&t.key_file, &t.key_passphrase)?;
+            ssl = ssl.with_client_identity(Some(ClientIdentity::new(cert.into(), key.into())));
+        }
+        (false, true) => anyhow::bail!(tr("Choose the client key of the client certificate")),
+        (true, false) => anyhow::bail!(tr("Choose the client certificate of the client key")),
+    }
+    Ok(Some(ssl))
+}
+
 impl MySession {
     pub async fn connect(cfg: &ConnectionConfig) -> anyhow::Result<Self> {
         let host = if cfg.host.trim().is_empty() { "localhost" } else { cfg.host.trim() };
@@ -77,20 +117,28 @@ impl MySession {
             // Affected rows = matched rows, so an UPDATE that writes the same value counts as 1.
             .client_found_rows(true)
             .stmt_cache_size(0);
-        let ssl = SslOpts::default()
-            .with_danger_accept_invalid_certs(cfg.trust_cert)
-            // Through an SSH tunnel the address is the tunnel's `127.0.0.1`, which the certificate
-            // can't name (mysql_async takes no separate TLS name); its chain is still checked.
-            .with_danger_skip_domain_validation(cfg.trust_cert || cfg.tunnel_host.is_some());
-
-        let with_tls = base.clone().ssl_opts(ssl);
-        let (conn, opts) = match open(with_tls.clone()).await {
-            // Server without TLS: plain connection.
-            Err(Some(mysql_async::Error::Driver(DriverError::NoClientSslFlagFromServer))) => {
-                (open(base.clone()).await, base)
+        let (conn, opts) = match tls_options(cfg)? {
+            None => (open(base.clone()).await, base),
+            Some(ssl) => {
+                let with_tls = base.clone().ssl_opts(ssl);
+                match open(with_tls.clone()).await {
+                    // Prefer: a server without TLS gets a plain connection.
+                    Err(Some(mysql_async::Error::Driver(DriverError::NoClientSslFlagFromServer))) if cfg.tls.mode == TlsMode::Prefer => {
+                        (open(base.clone()).await, base)
+                    }
+                    Err(Some(mysql_async::Error::Driver(DriverError::NoClientSslFlagFromServer))) => {
+                        anyhow::bail!(trf("{host}:{port} doesn't offer TLS: choose Prefer or Disable in the SSL settings", &[("host", &host), ("port", &port)]))
+                    }
+                    other => (other, with_tls),
+                }
             }
-            other => (other, with_tls),
         };
+        let name = cfg.tunnel_host.clone().unwrap_or_else(|| host.to_string());
+        if let Err(Some(e)) = &conn
+            && let Some(reason) = tls::explain(e, &cfg.tls, &name)
+        {
+            anyhow::bail!(reason);
+        }
         let conn = conn.map_err(|e| match e {
             None => anyhow!(trf("Timed out connecting to {host}:{port}", &[("host", &host), ("port", &port)])),
             Some(mysql_async::Error::Io(io)) => anyhow!(trf(
@@ -101,6 +149,14 @@ impl MySession {
             Some(other) => my_error(other),
         })?;
         Ok(Self { conn, opts, broken: false })
+    }
+
+    /// "TLSv1.3 TLS_AES_256_GCM_SHA384", or None for a plain connection.
+    pub async fn tls_description(&mut self) -> Option<String> {
+        let rows: Vec<(String, String)> =
+            self.conn.query("SHOW SESSION STATUS WHERE Variable_name IN ('Ssl_version', 'Ssl_cipher')").await.ok()?;
+        let get = |name: &str| rows.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone()).filter(|v| !v.is_empty());
+        Some(format!("{} {}", get("Ssl_version")?, get("Ssl_cipher").unwrap_or_default()).trim().to_string())
     }
 
     /// Options and server thread id to `KILL QUERY` this session's running statement.
@@ -392,6 +448,35 @@ fn time_text(neg: bool, days: u32, h: u8, mi: u8, s: u8, us: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssl_settings_become_mysql_async_options() {
+        let pki = tls::test_pki::pki();
+        let mut cfg = ConnectionConfig::new(1, crate::db::Driver::MySql);
+        cfg.tls.mode = TlsMode::Disable;
+        assert!(tls_options(&cfg).unwrap().is_none());
+        for mode in [TlsMode::Prefer, TlsMode::Require] {
+            cfg.tls.mode = mode;
+            let o = tls_options(&cfg).unwrap().unwrap();
+            assert!(o.accept_invalid_certs() && o.skip_domain_validation(), "{mode:?}");
+        }
+        cfg.tls = tls::TlsSettings { mode: TlsMode::VerifyFull, ca_file: pki.ca_file.clone(), ..Default::default() };
+        let o = tls_options(&cfg).unwrap().unwrap();
+        assert!(!o.accept_invalid_certs() && !o.skip_domain_validation() && o.disable_built_in_roots());
+        assert_eq!(o.root_certs().len(), 1);
+        assert_eq!(o.tls_hostname_override(), None);
+        // Through an SSH tunnel the name to check is the database's.
+        cfg.tunnel_host = Some("db.internal".into());
+        assert_eq!(tls_options(&cfg).unwrap().unwrap().tls_hostname_override(), Some("db.internal"));
+        cfg.tls.mode = TlsMode::VerifyCa;
+        assert!(tls_options(&cfg).unwrap().unwrap().skip_domain_validation());
+        // A client identity, decrypted when the key has a passphrase.
+        cfg.tls.cert_file = pki.client_cert.clone();
+        cfg.tls.key_file = pki.client_key_encrypted.clone();
+        assert!(tls_options(&cfg).is_err());
+        cfg.tls.key_passphrase = "pass phrase".into();
+        assert!(tls_options(&cfg).unwrap().unwrap().client_identity().is_some());
+    }
 
     #[test]
     fn text_values() {
