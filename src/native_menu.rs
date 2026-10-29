@@ -31,6 +31,7 @@ use std::sync::mpsc::{Receiver, channel};
 pub enum MenuCommand {
     // DataCraft
     About,
+    CheckUpdates,
     Settings,
     Quit,
     // File
@@ -68,8 +69,9 @@ pub enum MenuCommand {
 }
 
 impl MenuCommand {
-    const ALL: [MenuCommand; 30] = [
+    const ALL: [MenuCommand; 31] = [
         Self::About,
+        Self::CheckUpdates,
         Self::Settings,
         Self::Quit,
         Self::NewConnection,
@@ -302,6 +304,7 @@ fn build() -> muda::Result<Built> {
         true,
         &[
             &item(MenuCommand::About, || tr("About DataCraft"), None),
+            &item(MenuCommand::CheckUpdates, || tr("Check for Updates…"), None),
             &sep(),
             &item(MenuCommand::Settings, || tr("Settings…"), acc(cmd, Code::Comma)),
             &sep(),
