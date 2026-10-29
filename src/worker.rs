@@ -17,6 +17,8 @@ pub type ConnId = u64;
 pub type ConsoleId = u64;
 
 pub enum Request {
+    /// "Run SQL Script…": the files on a connection of their own; progress goes to `run`.
+    RunScript { conn: ConnId, db: Option<String>, files: Vec<std::path::PathBuf>, run: Arc<crate::db::script::ScriptRun> },
     Backup { conn: ConnId, id: uuid::Uuid, request: Box<crate::db::backup::BackupRequest>, cancel: Arc<std::sync::atomic::AtomicBool> },
     InspectTable { conn: ConnId, db: String, schema: String, table: String, console: ConsoleId, generation: u64, count_rows: bool, page_filter: Option<String> },
     SchemaSearch {
@@ -465,6 +467,18 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
             vec![Response::DatabaseChoices { conn, result }]
         }
         Request::Users { conn, request } => vec![Response::Users { conn, result: fetch_users(state, conn, &request).await }],
+        Request::RunScript { conn, db, files, run } => {
+            let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
+            match cfg {
+                Some(cfg) => crate::db::script::run(cfg, db, files, run).await,
+                None => {
+                    let mut p = run.progress.lock().unwrap_or_else(|e| e.into_inner());
+                    p.finished = true;
+                    p.stopped = Some(tr("The connection is not open").into());
+                }
+            }
+            Vec::new()
+        }
         Request::Backup { conn, id, request, cancel } => {
             let cfg = state.live.lock().await.get(&conn).map(|l| l.cfg.clone());
             let result = match cfg {

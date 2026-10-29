@@ -313,6 +313,7 @@ pub struct DataCraftApp {
     renaming: Option<(u64, String)>,
     show_about: bool,
     show_settings: bool,
+    script: Option<crate::ui::script_dialog::ScriptDialog>,
     check_updates: bool,
     skipped_version: Option<String>,
     /// The update check under way, and whether it was asked for ("Check for Updates…").
@@ -403,6 +404,7 @@ impl DataCraftApp {
             renaming: None,
             show_about: false,
             show_settings: false,
+            script: None,
             check_updates: persisted.check_updates,
             skipped_version: persisted.skipped_version,
             update_check: None,
@@ -1481,6 +1483,7 @@ impl DataCraftApp {
                         self.backup = Some(dialog);
                     }
                 }
+                ExplorerAction::RunScript(conn, db) => self.run_script(conn, db),
                 ExplorerAction::NewConnection => self.open_new_connection_dialog(),
                 ExplorerAction::Connect(id) => self.connect(id),
                 ExplorerAction::Disconnect(id) => self.disconnect(id),
@@ -1625,6 +1628,22 @@ impl DataCraftApp {
     }
 
     /// true (and reports it) if the connection is read-only.
+    /// "Run SQL Script…": the files picked run on a connection of their own, without opening them.
+    fn run_script(&mut self, conn: ConnId, db: Option<String>) {
+        if self.refuse_read_only(conn) {
+            return;
+        }
+        let Some(c) = self.conn(conn).filter(|c| c.status == ConnStatus::Connected) else { return };
+        let target = match &db {
+            Some(db) => format!("{} / {db}", c.cfg.name),
+            None => c.cfg.name.clone(),
+        };
+        let Some(files) = rfd::FileDialog::new().set_title(tr("Run SQL Script")).add_filter("SQL", &["sql"]).add_filter(tr("All files"), &["*"]).pick_files() else { return };
+        let run = std::sync::Arc::new(crate::db::script::ScriptRun::default());
+        self.worker.send(Request::RunScript { conn, db, files: files.clone(), run: run.clone() });
+        self.script = Some(crate::ui::script_dialog::ScriptDialog { conn, target, files, run });
+    }
+
     fn refuse_read_only(&mut self, conn: ConnId) -> bool {
         let ro = self.conn(conn).is_some_and(|c| c.cfg.read_only);
         if ro {
@@ -2379,7 +2398,7 @@ impl DataCraftApp {
 
     /// A modal dialog is open: shortcuts and run commands are ignored.
     fn modal_open(&self) -> bool {
-        self.backup.is_some() || self.object_browser.schema_search.open || self.object_browser.has_dialog() || self.dialog.is_some()
+        self.backup.is_some() || self.script.is_some() || self.object_browser.schema_search.open || self.object_browser.has_dialog() || self.dialog.is_some()
             || self.confirm_delete.is_some()
             || self.confirm_analyze.is_some()
             || self.create.is_some()
@@ -3242,6 +3261,15 @@ impl DataCraftApp {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
+        if let Some(d) = self.script.as_mut()
+            && let Some(ran) = d.show(ctx)
+        {
+            let conn = d.conn;
+            self.script = None;
+            if ran {
+                self.worker.send(Request::Refresh(conn));
+            }
+        }
         self.update_notice(ctx);
         if let Some(dialog) = self.backup.as_mut() {
             match dialog.show(ctx, &self.explorer.backups) {
@@ -4135,7 +4163,7 @@ mod tests {
             explorer: ExplorerState::default(), backup: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(),
             save_on_row_change: false,
             dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
-            show_about: false, show_settings: false, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
+            show_about: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
             zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None,

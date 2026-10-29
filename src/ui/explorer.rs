@@ -38,6 +38,8 @@ pub struct TableRef {
 
 pub enum ExplorerAction {
     Backup(ConnId, String),
+    /// "Run SQL Script…" on the connection, or on one of its databases.
+    RunScript(ConnId, Option<String>),
     NewConnection,
     Connect(ConnId),
     Disconnect(ConnId),
@@ -478,6 +480,10 @@ fn connection_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Exp
             actions.push(ExplorerAction::NewConsole(id, None));
             ui.close();
         }
+        if crate::db::script::supported(c.cfg.driver) && ui.add_enabled(connected && !c.cfg.read_only, egui::Button::new(tr("Run SQL Script…"))).clicked() {
+            actions.push(ExplorerAction::RunScript(id, None));
+            ui.close();
+        }
         ui.separator();
         if ui.button(tr("Properties…")).clicked() {
             actions.push(ExplorerAction::Edit(id));
@@ -685,6 +691,10 @@ fn database_rows(
             ui.close();
         }
         let connected = matches!(c.status, ConnStatus::Connected);
+        if crate::db::script::supported(c.cfg.driver) && ui.add_enabled(connected && !c.cfg.read_only, egui::Button::new(tr("Run SQL Script…"))).clicked() {
+            actions.push(ExplorerAction::RunScript(id, Some(db_name.clone())));
+            ui.close();
+        }
         let sql = !c.cfg.driver.is_nosql();
         if sql && ui.add_enabled(connected, egui::Button::new(tr("New Table…"))).clicked() {
             actions.push(ExplorerAction::NewTable { conn: id, db: db_name.clone(), schema: None });

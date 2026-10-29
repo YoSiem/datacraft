@@ -21,6 +21,7 @@ pub mod object_organization;
 pub mod plan_view;
 pub mod results;
 pub mod schema_search;
+pub mod script_dialog;
 pub mod theme;
 pub mod view_dialog;
 pub mod user_dialog;

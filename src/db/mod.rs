@@ -15,6 +15,7 @@ pub mod mongo;
 pub mod mssql;
 pub mod object_info;
 pub mod schema_search;
+pub mod script;
 pub mod subset;
 pub mod mysql;
 pub mod oracle;
