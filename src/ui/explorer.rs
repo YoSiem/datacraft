@@ -487,6 +487,10 @@ fn connection_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Exp
             actions.push(ExplorerAction::Duplicate(id));
             ui.close();
         }
+        if ui.button(tr("Copy as URL")).on_hover_text(tr("The connection's URL for other tools, without the password")).clicked() {
+            ui.ctx().copy_text(crate::db::url::connection_url(&c.cfg));
+            ui.close();
+        }
         if ui.button(RichText::new(tr("Delete…")).color(p.error)).clicked() {
             actions.push(ExplorerAction::Delete(id));
             ui.close();

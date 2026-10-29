@@ -285,6 +285,8 @@ pub struct DataCraftApp {
     save_on_row_change: bool,
     dialog: Option<ConnectionDialog>,
     confirm_delete: Option<ConnId>,
+    /// A connection imported without its password, and the password being typed.
+    ask_password: Option<(ConnId, String)>,
     /// "New Database" / "New Table" dialog.
     create: Option<CreateDialog>,
     /// Confirmation to drop a database, table or view.
@@ -374,6 +376,7 @@ impl DataCraftApp {
             save_on_row_change: persisted.save_on_row_change,
             dialog: None,
             confirm_delete: None,
+            ask_password: None,
             create: None,
             drop: None,
             views: Default::default(),
@@ -573,6 +576,10 @@ impl DataCraftApp {
     // ---------------------------------------------------------------- connection
 
     fn connect(&mut self, id: ConnId) {
+        if self.conn(id).is_some_and(|c| c.cfg.ask_password && c.cfg.password.is_empty()) {
+            self.ask_password = Some((id, String::new()));
+            return;
+        }
         if let Some(c) = self.conn_mut(id) {
             if matches!(c.status, ConnStatus::Connecting) {
                 return;
@@ -3350,6 +3357,53 @@ impl DataCraftApp {
             }
         }
 
+        if let Some((id, password)) = self.ask_password.as_mut() {
+            let id = *id;
+            let name = self.conns.iter().find(|c| c.cfg.id == id).map(|c| c.cfg.name.clone()).unwrap_or_default();
+            let mut decision = None;
+            egui::Modal::new(egui::Id::new("ask_password")).frame(frame).show(ctx, |ui| {
+                ui.set_width(380.0);
+                ui.label(RichText::new(tr("Password")).font(theme::bold(15.0)));
+                ui.add_space(8.0);
+                ui.label(trf("“{name}” was imported without its password. It is kept in the system keychain.", &[("name", &name)]));
+                ui.add_space(10.0);
+                let edit = ui.add(egui::TextEdit::singleline(password).password(true).margin(egui::vec2(8.0, 5.0)).desired_width(f32::INFINITY));
+                if !edit.has_focus() && !edit.lost_focus() {
+                    edit.request_focus();
+                }
+                if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    decision = Some(true);
+                }
+                ui.add_space(16.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if theme::primary_button(ui, tr("Connect")).clicked() {
+                        decision = Some(true);
+                    }
+                    if theme::secondary_button(ui, tr("Cancel")).clicked() {
+                        decision = Some(false);
+                    }
+                });
+            });
+            if ctx.input(|i| i.key_pressed(Key::Escape)) {
+                decision = Some(false);
+            }
+            match decision {
+                Some(true) => {
+                    let password = self.ask_password.take().map(|(_, p)| p).unwrap_or_default();
+                    if let Some(c) = self.conn_mut(id) {
+                        c.cfg.password = password;
+                        c.cfg.ask_password = false;
+                        config::store_secrets(&c.cfg);
+                    }
+                    self.persist_connections();
+                    self.connect(id);
+                }
+                Some(false) => self.ask_password = None,
+                None => {}
+            }
+        }
+
         if let Some(action) = self.confirm_discard {
             let mut decision = None;
             egui::Modal::new(egui::Id::new("confirm_discard")).frame(frame).show(ctx, |ui| {
@@ -3941,7 +3995,7 @@ mod tests {
             active: 1, next_console_id: 5, console_counter: 4, result_salt: 0,
             explorer: ExplorerState::default(), backup: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(),
             save_on_row_change: false,
-            dialog: None, confirm_delete: None, create: None, drop: None, views: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
+            dialog: None, confirm_delete: None, ask_password: None, create: None, drop: None, views: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
             show_about: false, show_settings: false, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,

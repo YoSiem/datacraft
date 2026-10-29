@@ -169,6 +169,12 @@ PostgreSQL, MySQL and MariaDB data sources choose how the connection is encrypte
 - **Test Connection** names the TLS version and cipher. A refused certificate says which CA didn't sign it, or which host it wasn't issued for.
 - **Through an SSH tunnel,** the certificate is still checked against the database's own host name.
 
+### Bring your connections
+
+- **Paste a URL:** the URL field also takes `postgresql://`, `mysql://`, `mariadb://`, `sqlserver://`, `mongodb://`, `mongodb+srv://`, `redis://`, `rediss://` and `clickhouse://` URLs, and a SQLite file's path. The engine, user, password and SSL settings are filled in; the password goes to the system keychain.
+- **Copy as URL:** a connection's context menu copies its URL for other tools, without the password.
+- **Import from DataGrip:** **+ → Import from DataGrip…** lists the data sources of DataGrip's projects (or any `dataSources.xml`) with their engine, folder and address. Engines DataCraft doesn't support are shown but can't be ticked, existing ones are left unticked and a name in use is imported as a copy. Passwords aren't imported: DataCraft asks for each one on the first connect. DataGrip's files are only read.
+
 Support varies by engine, server version and account privileges. [Oracle Instant Client](https://www.oracle.com/database/technologies/instant-client.html) must be installed separately for Oracle connections.
 
 ## Designed for the desktop
