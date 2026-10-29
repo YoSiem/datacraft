@@ -18,6 +18,7 @@ pub mod schema_search;
 pub mod subset;
 pub mod mysql;
 pub mod oracle;
+pub mod plan;
 pub mod postgres;
 pub mod redis_db;
 pub mod snowflake;

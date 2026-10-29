@@ -18,6 +18,7 @@ pub mod explorer;
 pub mod icons;
 pub mod object_browser;
 pub mod object_organization;
+pub mod plan_view;
 pub mod results;
 pub mod schema_search;
 pub mod theme;

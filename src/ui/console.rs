@@ -157,6 +157,8 @@ enum EditCmd {
     Duplicate,
     DeleteLine,
     Explain,
+    /// Runs the statement and shows the plan with actual rows and time (asks first if it writes).
+    ExplainAnalyze,
     History,
     Find,
     Replace,
@@ -213,6 +215,8 @@ pub enum ConsoleAction {
     RunAll,
     /// Run these statements as they are (e.g. the explain plan of the current statement).
     RunStatements(Vec<String>),
+    /// "Explain Analyze" of `statement`: `explain` runs it, so the app asks first if it writes.
+    ExplainAnalyze { statement: String, explain: String },
     /// Cancel the running query.
     Cancel,
     /// Reload the table editor data (with the current filters).
@@ -539,14 +543,20 @@ impl Console {
             EditCmd::ToggleComment => self.edit_lines(ctx, if cx.driver == Driver::Kusto { toggle_slash_comment } else { toggle_line_comment }),
             EditCmd::Duplicate => self.edit_lines(ctx, duplicate_lines),
             EditCmd::DeleteLine => self.edit_lines(ctx, delete_lines),
-            EditCmd::Explain => {
+            EditCmd::Explain | EditCmd::ExplainAnalyze => {
                 if !self.is_busy() {
                     let stmt = match self.selection() {
                         Some(sel) => sql::split_statements(sel, cx.driver).into_iter().next(),
                         None => sql::statement_at(&self.text, self.cursor_byte(), cx.driver),
                     };
-                    let statements = stmt.map(|s| sql::explain_statements(&s.text, cx.driver)).unwrap_or_default();
-                    actions.push(ConsoleAction::RunStatements(statements));
+                    let Some(stmt) = stmt else { return };
+                    // PostgreSQL, MySQL and MariaDB give a plan the results show as a tree.
+                    match crate::db::plan::explain_statement(&stmt.text, cx.driver, cmd == EditCmd::ExplainAnalyze) {
+                        Some(explain) if cmd == EditCmd::ExplainAnalyze => actions.push(ConsoleAction::ExplainAnalyze { statement: stmt.text, explain }),
+                        Some(explain) => actions.push(ConsoleAction::RunStatements(vec![explain])),
+                        None if cmd == EditCmd::Explain => actions.push(ConsoleAction::RunStatements(sql::explain_statements(&stmt.text, cx.driver))),
+                        None => {}
+                    }
                 }
             }
             EditCmd::History => {
@@ -1621,7 +1631,7 @@ impl Console {
                             let r = output.galley.pos_from_cursor(CCursor::new(c)).translate(output.galley_pos.to_vec2());
                             ui.scroll_to_rect(r.expand2(vec2(40.0, row_h)), Some(egui::Align::Center));
                         }
-                        output.response.context_menu(|ui| editor_menu(ui, busy, cmds));
+                        output.response.context_menu(|ui| editor_menu(ui, busy, crate::db::plan::explain_statement("x", driver, true).is_some(), cmds));
                     });
                 });
         });
@@ -1809,11 +1819,12 @@ fn take_key(i: &mut egui::InputState, mods: Modifiers, key: Key) -> bool {
 }
 
 /// Editor context menu (DataGrip's editor popup, with its shortcuts).
-fn editor_menu(ui: &mut Ui, busy: bool, cmds: &mut Vec<EditCmd>) {
+fn editor_menu(ui: &mut Ui, busy: bool, analyze: bool, cmds: &mut Vec<EditCmd>) {
     ui.set_min_width(250.0);
     let delete_line = if cfg!(target_os = "macos") { "⌘⌫" } else { "Ctrl+Y" };
-    let items: [(Option<EditCmd>, &str, &str, bool); 10] = [
+    let items: [(Option<EditCmd>, &str, &str, bool); 11] = [
         (Some(EditCmd::Explain), tr("Explain Plan"), "⇧⌘E", !busy),
+        (Some(EditCmd::ExplainAnalyze), tr("Explain Analyze"), "", !busy && analyze),
         (None, "", "", true),
         (Some(EditCmd::Format), tr("Reformat Code"), "⌥⌘L", true),
         (Some(EditCmd::ToggleComment), tr("Comment with Line Comment"), "⌘/", true),
