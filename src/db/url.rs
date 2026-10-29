@@ -1,7 +1,11 @@
 //! The connection dialog's URL field: DataGrip's JDBC URL for each driver, built from the
-//! General tab fields and parsed back into them when the URL is edited.
+//! General tab fields and parsed back into them when the URL is edited. It also takes the URLs
+//! other tools use (`postgresql://user:pw@host/db`, `mongodb+srv://…`), and "Copy as URL" writes
+//! them.
 
-use super::{ConnectionConfig, Driver, snowflake};
+use super::mongo::enc;
+use super::tls::{TlsMode, TlsSettings};
+use super::{AuthMode, ConnectionConfig, Driver, snowflake};
 
 /// The URL DataGrip shows for these settings (default URL templates of its drivers), followed by
 /// the parameters that have no field (`url_extra`).
@@ -20,7 +24,9 @@ pub fn jdbc_url(cfg: &ConnectionConfig) -> String {
         Driver::Oracle => format!("jdbc:oracle:thin:@//{authority}{slash_db}{extra}"),
         Driver::Sqlite => format!("jdbc:sqlite:{}", cfg.file_path.trim()),
         Driver::Snowflake => snowflake::jdbc_url(cfg),
+        Driver::Redis if truthy(cfg.property("tls")) => format!("rediss://{authority}{slash_db}{extra}"),
         Driver::Redis => format!("redis://{authority}{slash_db}{extra}"),
+        Driver::MongoDb if mongo_srv(cfg) => format!("mongodb+srv://{host}{slash_db}{extra}"),
         Driver::MongoDb => format!("mongodb://{authority}{slash_db}{extra}"),
         Driver::ClickHouse => format!("clickhouse://{authority}{slash_db}{extra}"),
         Driver::InfluxDb => format!("influxdb://{authority}{slash_db}{extra}"),
@@ -110,6 +116,290 @@ pub fn apply_jdbc_url(cfg: &mut ConnectionConfig, url: &str) -> bool {
     true
 }
 
+/// Schemes of the connection URLs other tools take, and their engine.
+const SCHEMES: [(&str, Driver); 12] = [
+    ("postgresql://", Driver::Postgres),
+    ("postgres://", Driver::Postgres),
+    ("mysql://", Driver::MySql),
+    ("mariadb://", Driver::MariaDb),
+    ("sqlserver://", Driver::MsSql),
+    ("mssql://", Driver::MsSql),
+    ("mongodb+srv://", Driver::MongoDb),
+    ("mongodb://", Driver::MongoDb),
+    ("rediss://", Driver::Redis),
+    ("redis://", Driver::Redis),
+    ("clickhouse://", Driver::ClickHouse),
+    ("sqlite:", Driver::Sqlite),
+];
+
+fn scheme_of(url: &str) -> Option<(&'static str, Driver)> {
+    SCHEMES.into_iter().find(|(s, _)| url.get(..s.len()).is_some_and(|p| p.eq_ignore_ascii_case(s)))
+}
+
+fn truthy(v: Option<&str>) -> bool {
+    v.is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
+}
+
+/// `mongodb+srv://`: Atlas, or the `srv` property.
+fn mongo_srv(cfg: &ConnectionConfig) -> bool {
+    cfg.host.trim().ends_with(".mongodb.net") || truthy(cfg.property("srv"))
+}
+
+/// A SQLite file's path, pasted as is (`/data/app.db`, `~/app.sqlite`, `C:\data\app.db`).
+fn sqlite_path(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let absolute = text.starts_with('/') || text.starts_with("~/") || text.get(1..3).is_some_and(|s| s == ":\\" || s == ":/");
+    absolute && !text.contains("://") && [".db", ".sqlite", ".sqlite3", ".db3"].iter().any(|e| lower.ends_with(e))
+}
+
+/// The URL field's text: this driver's JDBC URL, or another tool's connection URL of any engine
+/// (or a SQLite file's path), which switches the driver and also fills user and password.
+/// Returns false, changing nothing, when it is neither.
+pub fn apply_url(cfg: &mut ConnectionConfig, url: &str) -> bool {
+    let url = url.trim();
+    let driver = match scheme_of(url) {
+        Some((_, d)) => Some(d),
+        None if sqlite_path(url) => Some(Driver::Sqlite),
+        None => None,
+    };
+    if let Some(driver) = driver {
+        let mut c = cfg.clone();
+        c.change_driver(driver);
+        if apply_connection_url(&mut c, url) {
+            *cfg = c;
+            return true;
+        }
+    }
+    apply_jdbc_url(cfg, url)
+}
+
+/// `scheme://[user[:password]@]host[:port][/database][?params]` for `cfg.driver`, which the
+/// scheme must be one of; SQL Server also takes `;database=…;user=…` parameters. The password
+/// is only replaced when the URL has one.
+pub(crate) fn apply_connection_url(cfg: &mut ConnectionConfig, url: &str) -> bool {
+    if cfg.driver == Driver::Sqlite {
+        let path = ["sqlite://", "sqlite:"].iter().find_map(|s| url.get(..s.len()).filter(|p| p.eq_ignore_ascii_case(s)).map(|_| &url[s.len()..]));
+        let path = path.unwrap_or(url);
+        // `sqlite:////abs` (SQLAlchemy) is `/abs`.
+        let path = if path.starts_with("//") { &path[path.len() - path.trim_start_matches('/').len() - 1..] } else { path };
+        let path = match (path.strip_prefix("~/"), dirs::home_dir()) {
+            (Some(rest), Some(home)) => home.join(rest).to_string_lossy().into_owned(),
+            _ => path.to_string(),
+        };
+        if path.trim().is_empty() {
+            return false;
+        }
+        cfg.file_path = path;
+        return true;
+    }
+    let Some((scheme, driver)) = scheme_of(url) else { return false };
+    if driver != cfg.driver {
+        return false;
+    }
+    let rest = &url[scheme.len()..];
+    let (main, query) = rest.split_at(rest.find(['?', ';']).unwrap_or(rest.len()));
+    let (userinfo, hostpart) = match main.rfind('@') {
+        Some(i) => (Some(&main[..i]), &main[i + 1..]),
+        None => (None, main),
+    };
+    let (authority, path) = hostpart.split_once('/').unwrap_or((hostpart, ""));
+    if authority.is_empty() {
+        return false;
+    }
+    let Some((host, port)) = parse_authority(authority, cfg.driver.default_port()) else { return false };
+    let (mut user, mut password) = match userinfo.map(|u| u.split_once(':').unwrap_or((u, ""))) {
+        Some((u, p)) => (Some(decode(u)), userinfo.filter(|u| u.contains(':')).map(|_| decode(p))),
+        None => (None, None),
+    };
+    let mut database = decode(path.trim_end_matches('/'));
+    let mut extra = Vec::new();
+    for param in query.trim_start_matches(['?', ';']).split(['&', ';']).filter(|p| !p.trim().is_empty()) {
+        let (k, v) = param.split_once('=').unwrap_or((param, ""));
+        let (key, value) = (k.trim().to_ascii_lowercase(), decode(v.trim()));
+        match (cfg.driver, key.as_str()) {
+            (Driver::MsSql, "database" | "databasename") => database = value,
+            (Driver::MsSql, "user" | "username" | "user id" | "uid") => user = Some(value),
+            (Driver::MsSql, "password" | "pwd") => password = Some(value),
+            (Driver::MsSql, "trustservercertificate") => cfg.trust_cert = truthy(Some(&value)),
+            (Driver::Postgres | Driver::MySql | Driver::MariaDb, _) if tls_param(&mut cfg.tls, &key, &value) => {}
+            (Driver::ClickHouse, "secure" | "ssl") => cfg.set_property("tls", if truthy(Some(&value)) { "true" } else { "" }),
+            _ => extra.push(param.trim().to_string()),
+        }
+    }
+    match cfg.driver {
+        Driver::Redis => cfg.set_property("tls", if scheme.eq_ignore_ascii_case("rediss://") { "true" } else { "" }),
+        Driver::MongoDb => cfg.set_property("srv", if scheme.eq_ignore_ascii_case("mongodb+srv://") { "true" } else { "" }),
+        _ => {}
+    }
+    cfg.url_extra = match cfg.driver {
+        _ if extra.is_empty() => String::new(),
+        Driver::MsSql => extra.iter().map(|p| format!(";{p}")).collect(),
+        _ => format!("?{}", extra.join("&")),
+    };
+    (cfg.host, cfg.port, cfg.database) = (host, port, database);
+    if user.is_some() || password.is_some() {
+        if matches!(cfg.auth, AuthMode::NoAuth | AuthMode::AzureCli) {
+            cfg.auth = AuthMode::UserPassword;
+        }
+        cfg.user = user.unwrap_or_default();
+    }
+    if let Some(p) = password {
+        cfg.password = p;
+    }
+    true
+}
+
+/// The SSL parameters of PostgreSQL's and MySQL's URLs (`sslmode=verify-full`, `ssl-mode=REQUIRED`,
+/// `sslrootcert=…`, JDBC's `useSSL=false`) into the SSL settings. False for any other parameter.
+fn tls_param(t: &mut TlsSettings, key: &str, value: &str) -> bool {
+    let file = match key {
+        "sslmode" | "ssl-mode" | "ssl_mode" => {
+            let mode = match value.to_ascii_lowercase().replace('_', "-").as_str() {
+                "disable" | "disabled" => TlsMode::Disable,
+                "allow" | "prefer" | "preferred" => TlsMode::Prefer,
+                "require" | "required" => TlsMode::Require,
+                "verify-ca" => TlsMode::VerifyCa,
+                "verify-full" | "verify-identity" => TlsMode::VerifyFull,
+                _ => return false,
+            };
+            t.mode = mode;
+            return true;
+        }
+        "usessl" | "ssl" => {
+            match (truthy(Some(value)), t.mode) {
+                (false, _) => t.mode = TlsMode::Disable,
+                (true, TlsMode::Disable | TlsMode::Prefer) => t.mode = TlsMode::Require,
+                _ => {}
+            }
+            return true;
+        }
+        "sslrootcert" | "ssl-ca" | "sslca" => &mut t.ca_file,
+        "sslcert" | "ssl-cert" => &mut t.cert_file,
+        "sslkey" | "ssl-key" => &mut t.key_file,
+        _ => return false,
+    };
+    *file = value.to_string();
+    true
+}
+
+/// Moves the SSL parameters of a PostgreSQL / MySQL / MariaDB URL's `url_extra` into the SSL
+/// settings (DataGrip's imported URLs).
+pub(crate) fn take_tls_params(cfg: &mut ConnectionConfig) {
+    if !super::tls::supported(cfg.driver) || cfg.url_extra.is_empty() {
+        return;
+    }
+    let extra = std::mem::take(&mut cfg.url_extra);
+    let sep = &extra[..1];
+    let kept: Vec<&str> = extra[1..]
+        .split(['&', ';'])
+        .filter(|p| {
+            let (k, v) = p.split_once('=').unwrap_or((p, ""));
+            !p.trim().is_empty() && !tls_param(&mut cfg.tls, &k.trim().to_ascii_lowercase(), &decode(v.trim()))
+        })
+        .collect();
+    if !kept.is_empty() {
+        cfg.url_extra = format!("{sep}{}", kept.join(if sep == ";" { ";" } else { "&" }));
+    }
+}
+
+/// Percent-decoding (`%40` → `@`); a stray `%` is kept.
+fn decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        match (b[i], b.get(i + 1).copied().and_then(hex), b.get(i + 2).copied().and_then(hex)) {
+            (b'%', Some(h), Some(l)) => {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+            }
+            (c, ..) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// "Copy as URL": the connection as other tools take it (`postgresql://user@host:5432/db`), never
+/// with its password. Engines without such a URL give their JDBC or cluster URL.
+pub fn connection_url(cfg: &ConnectionConfig) -> String {
+    let host = cfg.host.trim();
+    let signs_in = matches!(cfg.auth, AuthMode::UserPassword | AuthMode::Authenticator);
+    let user = if signs_in { cfg.user.trim() } else { "" };
+    let userinfo = if user.is_empty() { String::new() } else { format!("{}@", enc(user)) };
+    let authority = if cfg.port == 0 { host.to_string() } else { format!("{host}:{}", cfg.port) };
+    let db = enc(cfg.database.trim());
+    let query = |params: Vec<String>| if params.is_empty() { String::new() } else { format!("?{}", params.join("&")) };
+    match cfg.driver {
+        Driver::Postgres | Driver::MySql | Driver::MariaDb => {
+            let pg = cfg.driver == Driver::Postgres;
+            let t = &cfg.tls;
+            let mut params = Vec::new();
+            if t.mode != TlsMode::Prefer {
+                let mode = match (t.mode, pg) {
+                    (TlsMode::Disable, true) => "disable",
+                    (TlsMode::Require, true) => "require",
+                    (TlsMode::VerifyCa, true) => "verify-ca",
+                    (_, true) => "verify-full",
+                    (TlsMode::Disable, false) => "DISABLED",
+                    (TlsMode::Require, false) => "REQUIRED",
+                    (TlsMode::VerifyCa, false) => "VERIFY_CA",
+                    (_, false) => "VERIFY_IDENTITY",
+                };
+                params.push(format!("{}={mode}", if pg { "sslmode" } else { "ssl-mode" }));
+            }
+            if t.mode != TlsMode::Disable {
+                for (k_pg, k_my, file) in [("sslrootcert", "ssl-ca", &t.ca_file), ("sslcert", "ssl-cert", &t.cert_file), ("sslkey", "ssl-key", &t.key_file)] {
+                    if !file.trim().is_empty() {
+                        params.push(format!("{}={}", if pg { k_pg } else { k_my }, enc(file.trim())));
+                    }
+                }
+            }
+            let scheme = match cfg.driver {
+                Driver::Postgres => "postgresql",
+                Driver::MySql => "mysql",
+                _ => "mariadb",
+            };
+            format!("{scheme}://{userinfo}{authority}/{db}{}", query(params))
+        }
+        Driver::MsSql => {
+            let mut url = format!("sqlserver://{authority}");
+            if !db.is_empty() {
+                url += &format!(";database={db}");
+            }
+            if !user.is_empty() {
+                url += &format!(";user={}", enc(user));
+            }
+            if cfg.trust_cert {
+                url += ";trustServerCertificate=true";
+            }
+            url + cfg.url_extra.trim()
+        }
+        Driver::Redis => {
+            let scheme = if truthy(cfg.property("tls")) { "rediss" } else { "redis" };
+            format!("{scheme}://{userinfo}{authority}/{db}{}", cfg.url_extra.trim())
+        }
+        Driver::MongoDb if mongo_srv(cfg) => format!("mongodb+srv://{userinfo}{host}/{db}{}", cfg.url_extra.trim()),
+        Driver::MongoDb => format!("mongodb://{userinfo}{authority}/{db}{}", cfg.url_extra.trim()),
+        Driver::ClickHouse => {
+            let extra = cfg.url_extra.trim();
+            let secure = if !truthy(cfg.property("tls")) {
+                ""
+            } else if extra.is_empty() {
+                "?secure=true"
+            } else {
+                "&secure=true"
+            };
+            format!("clickhouse://{userinfo}{authority}/{db}{extra}{secure}")
+        }
+        Driver::Sqlite => format!("sqlite:{}", cfg.file_path.trim()),
+        Driver::Oracle | Driver::Snowflake | Driver::InfluxDb | Driver::Kusto => jdbc_url(cfg),
+    }
+}
+
 /// `host[:port]`; a missing port is the driver's default, as the JDBC drivers read it. None when
 /// the port is out of range (`host:99999`) rather than leaving it inside the host.
 pub(crate) fn parse_authority(authority: &str, default_port: u16) -> Option<(String, u16)> {
@@ -125,6 +415,7 @@ pub(crate) fn parse_authority(authority: &str, default_port: u16) -> Option<(Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::tls;
 
     #[test]
     fn round_trips_every_driver() {
@@ -169,5 +460,83 @@ mod tests {
         assert!(!apply_jdbc_url(&mut pg, "jdbc:postgresql://db:99999/app"));
         assert!(!apply_jdbc_url(&mut pg, "jdbc:postgresql://db:0/app"));
         assert_eq!(pg, before);
+    }
+
+    #[test]
+    fn pasted_connection_urls_fill_the_fields() {
+        // A PostgreSQL URL pasted into a new MySQL data source switches the driver.
+        let mut cfg = ConnectionConfig::new(1, Driver::MySql);
+        cfg.name = "MySQL".into();
+        assert!(apply_url(&mut cfg, "postgresql://app%40corp:p%2Fss@db.example.com:6432/orders?sslmode=verify-full&sslrootcert=%2Fcerts%2Fca.pem&application_name=x"));
+        assert_eq!((cfg.driver, cfg.name.as_str(), cfg.host.as_str(), cfg.port, cfg.database.as_str()), (Driver::Postgres, "PostgreSQL", "db.example.com", 6432, "orders"));
+        assert_eq!((cfg.user.as_str(), cfg.password.as_str()), ("app@corp", "p/ss"));
+        assert_eq!((cfg.tls.mode, cfg.tls.ca_file.as_str(), cfg.url_extra.as_str()), (TlsMode::VerifyFull, "/certs/ca.pem", "?application_name=x"));
+
+        // Without a password in it, the one typed stays.
+        assert!(apply_url(&mut cfg, "postgres://reader@db.example.com/orders"));
+        assert_eq!((cfg.user.as_str(), cfg.password.as_str(), cfg.port), ("reader", "p/ss", 5432));
+
+        let mut my = ConnectionConfig::new(1, Driver::Postgres);
+        assert!(apply_url(&mut my, "mysql://root:pw@mysql.example.com/shop?ssl-mode=REQUIRED"));
+        assert_eq!((my.driver, my.port, my.database.as_str(), my.tls.mode), (Driver::MySql, 3306, "shop", TlsMode::Require));
+
+        let mut ms = ConnectionConfig::new(1, Driver::Postgres);
+        assert!(apply_url(&mut ms, "sqlserver://sql.example.com:1434;database=erp;user=sa;password=Secret1;encrypt=true;trustServerCertificate=false"));
+        assert_eq!((ms.driver, ms.port, ms.database.as_str(), ms.user.as_str(), ms.password.as_str()), (Driver::MsSql, 1434, "erp", "sa", "Secret1"));
+        assert_eq!((ms.trust_cert, ms.url_extra.as_str()), (false, ";encrypt=true"));
+
+        let mut mongo = ConnectionConfig::new(1, Driver::Postgres);
+        assert!(apply_url(&mut mongo, "mongodb+srv://app:pw@cluster0.example.net/shop?retryWrites=true&w=majority"));
+        assert_eq!((mongo.driver, mongo.host.as_str(), mongo.database.as_str(), mongo.property("srv")), (Driver::MongoDb, "cluster0.example.net", "shop", Some("true")));
+        assert_eq!((mongo.user.as_str(), mongo.url_extra.as_str()), ("app", "?retryWrites=true&w=majority"));
+        assert!(jdbc_url(&mongo).starts_with("mongodb+srv://cluster0.example.net/shop"));
+
+        let mut redis = ConnectionConfig::new(1, Driver::Postgres);
+        assert!(apply_url(&mut redis, "rediss://:secret@cache.example.com:6380/3"));
+        assert_eq!((redis.driver, redis.port, redis.database.as_str(), redis.user.as_str(), redis.password.as_str()), (Driver::Redis, 6380, "3", "", "secret"));
+        assert_eq!((redis.property("tls"), jdbc_url(&redis).as_str()), (Some("true"), "rediss://cache.example.com:6380/3"));
+
+        let mut ch = ConnectionConfig::new(1, Driver::Postgres);
+        assert!(apply_url(&mut ch, "clickhouse://default@ch.example.com:9440/logs?secure=true"));
+        assert_eq!((ch.driver, ch.port, ch.property("tls")), (Driver::ClickHouse, 9440, Some("true")));
+
+        for (text, path) in [("sqlite:///data/app.db", "/data/app.db"), ("sqlite:////data/app.db", "/data/app.db"), ("/data/app.sqlite", "/data/app.sqlite")] {
+            let mut lite = ConnectionConfig::new(1, Driver::Postgres);
+            assert!(apply_url(&mut lite, text), "{text}");
+            assert_eq!((lite.driver, lite.file_path.as_str()), (Driver::Sqlite, path));
+        }
+
+        // Neither a URL nor this driver's JDBC URL: nothing changes.
+        let before = cfg.clone();
+        assert!(!apply_url(&mut cfg, "ftp://host/file"));
+        assert!(!apply_url(&mut cfg, "postgresql://"));
+        assert_eq!(cfg, before);
+    }
+
+    #[test]
+    fn copy_as_url_never_has_the_password_and_pastes_back() {
+        for driver in Driver::ALL {
+            let mut cfg = ConnectionConfig::new(1, driver);
+            cfg.host = "db.example.com".into();
+            cfg.port = 5555;
+            cfg.database = if driver == Driver::Snowflake { "ANALYTICS".into() } else { "sales".into() };
+            cfg.user = "app user".into();
+            cfg.password = "SECRET-PW".into();
+            cfg.file_path = "/tmp/x.db".into();
+            cfg.tls.mode = TlsMode::Require;
+            let url = connection_url(&cfg);
+            assert!(!url.contains("SECRET-PW"), "{url}");
+            let mut back = ConnectionConfig::new(2, Driver::Postgres);
+            assert!(apply_url(&mut back, &url) || matches!(driver, Driver::Oracle | Driver::Snowflake | Driver::InfluxDb | Driver::Kusto), "{url}");
+            if matches!(driver, Driver::Postgres | Driver::MySql | Driver::MariaDb | Driver::MsSql | Driver::Redis | Driver::MongoDb | Driver::ClickHouse) {
+                assert_eq!((back.driver, back.host.as_str(), back.port, back.database.as_str(), back.user.as_str()), (driver, "db.example.com", 5555, "sales", "app user"), "{url}");
+            }
+            if tls::supported(driver) {
+                assert_eq!(back.tls.mode, TlsMode::Require, "{url}");
+            }
+        }
+        let mut pg = ConnectionConfig::new(1, Driver::Postgres);
+        pg.host = "db".into();
+        assert_eq!(connection_url(&pg), "postgresql://postgres@db:5432/postgres");
     }
 }

@@ -6,6 +6,7 @@
 pub mod alter;
 pub mod copy;
 pub mod create_db;
+pub mod datagrip;
 pub mod backup;
 pub mod clickhouse;
 pub mod influx;
@@ -198,6 +199,8 @@ pub struct ConnectionConfig {
     /// checks the certificate against while the connection goes to `127.0.0.1`.
     #[serde(skip)]
     pub tunnel_host: Option<String>,
+    /// Imported (from DataGrip) without its password: it is asked for on the first connect.
+    pub ask_password: bool,
 }
 
 /// Driver properties that hold secrets (`token`, `private_key_file_pwd`, `password`…): their
@@ -274,7 +277,48 @@ impl ConnectionConfig {
             ssh: ssh::SshSettings::default(),
             tls: tls::TlsSettings::default(),
             tunnel_host: None,
+            ask_password: false,
         }
+    }
+
+    /// Switches the engine: fields still at the old engine's defaults take the new one's, and an
+    /// authentication the new engine doesn't offer goes back to user and password.
+    pub fn change_driver(&mut self, new: Driver) {
+        let cfg = self;
+        let old = cfg.driver;
+        if old == new {
+            return;
+        }
+        let old_def = Self::new(cfg.id, old);
+        let new_def = Self::new(cfg.id, new);
+        // Kusto starts without a host (a cluster address, not localhost).
+        if cfg.host == old_def.host {
+            cfg.host = new_def.host;
+        }
+        if cfg.port == old_def.port {
+            cfg.port = new_def.port;
+        }
+        if cfg.database == old_def.database {
+            cfg.database = new_def.database;
+        }
+        if cfg.user == old_def.user {
+            cfg.user = new_def.user;
+        }
+        if cfg.name == old_def.name || cfg.name == old.label() {
+            cfg.name = new.label().to_string();
+        }
+        // Authenticator is Snowflake's only, the Azure CLI Kusto's only; InfluxDB always takes a
+        // token, and Kusto starts with the Azure CLI's account.
+        if (new != Driver::Snowflake && cfg.auth == AuthMode::Authenticator)
+            || (new != Driver::Kusto && cfg.auth == AuthMode::AzureCli)
+            || new == Driver::InfluxDb
+        {
+            cfg.auth = AuthMode::UserPassword;
+        }
+        if new == Driver::Kusto && cfg.auth == AuthMode::UserPassword && cfg.user.trim().is_empty() {
+            cfg.auth = AuthMode::AzureCli;
+        }
+        cfg.driver = new;
     }
 
     /// Value of a driver property (case-insensitive name), when set and not blank.
