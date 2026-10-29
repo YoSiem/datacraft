@@ -634,8 +634,6 @@ fn parse_postgres(p: &mut Parser<'_>, spec: &mut RoutineSpec) -> Option<()> {
     Some(())
 }
 
-const MYSQL_CHARACTERISTICS: &[&str] = &["COMMENT", "LANGUAGE", "NOT", "DETERMINISTIC", "CONTAINS", "NO", "READS", "MODIFIES", "SQL"];
-
 /// A MySQL type: name, `(…)` and attributes such as `UNSIGNED` or `CHARSET x`.
 fn mysql_type(p: &mut Parser<'_>) -> Option<String> {
     let from = p.i;

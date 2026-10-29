@@ -2,6 +2,7 @@
 //! (Islands style).
 
 use crate::app::{ConnState, ConnStatus};
+use crate::db::routines::{RoutineInfo, RoutineKind, RoutineList, RoutineRef};
 use crate::db::{DatabaseInfo, Driver, ObjectKind, SchemaInfo, TableInfo};
 use crate::i18n::tr;
 use crate::ui::icons::{self, Ico};
@@ -55,6 +56,14 @@ pub enum ExplorerAction {
     NewView { conn: ConnId, db: String, schema: Option<String> },
     /// "Edit View" dialog, with the view's definition read from the server.
     EditView(TableRef),
+    /// "New Procedure" / "New Function" dialog in a database (and schema, if one was chosen).
+    NewRoutine { conn: ConnId, db: String, schema: Option<String>, kind: RoutineKind },
+    /// Routine dialog with the routine's definition read from the server.
+    EditRoutine(RoutineRef),
+    /// "Execute…": the parameter form, then a console that runs the call.
+    ExecuteRoutine(RoutineRef),
+    RoutineDdl(RoutineRef),
+    DropRoutine(RoutineRef),
     /// Confirm and drop a database.
     DropDatabase(ConnId, String),
     /// Confirm and drop a table or view.
@@ -408,12 +417,26 @@ fn db_has_match(d: &DatabaseInfo, filter: &str) -> bool {
     d.schemas.as_ref().is_some_and(|ss| ss.iter().any(|s| s.tables.iter().any(|t| table_matches(t, filter))))
 }
 
+fn routine_matches(r: &RoutineInfo, f: &str) -> bool {
+    f.is_empty() || r.name.to_lowercase().contains(f)
+}
+
+/// Routines of `schema` (all of them when the database has a single schema).
+fn schema_routines<'a>(routines: Option<&'a RoutineList>, schema: Option<&'a str>) -> impl Iterator<Item = &'a RoutineInfo> {
+    routines.and_then(|l| l.items.as_deref()).unwrap_or_default().iter().filter(move |r| schema.is_none_or(|s| r.schema == s))
+}
+
+/// Filtering by name also finds routines (once they are loaded).
+fn db_routines_match(c: &ConnState, d: &DatabaseInfo, filter: &str) -> bool {
+    !filter.is_empty() && schema_routines(c.routines.get(&d.name), None).any(|r| routine_matches(r, filter))
+}
+
 fn connection_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<ExplorerAction>, c: &ConnState, filter: &str) {
     let p = pal(ui);
     let filtering = !filter.is_empty();
     let id = c.cfg.id;
     let name_match = filtering && c.cfg.name.to_lowercase().contains(filter);
-    let any_table = c.databases.iter().any(|d| db_has_match(d, filter));
+    let any_table = c.databases.iter().any(|d| db_has_match(d, filter) || db_routines_match(c, d, filter));
     if filtering && !name_match && !any_table {
         return;
     }
@@ -618,7 +641,8 @@ fn database_rows(
     let p = pal(ui);
     let filtering = !filter.is_empty();
     let id = c.cfg.id;
-    let has_match = db_has_match(d, filter);
+    let has_match = db_has_match(d, filter) || db_routines_match(c, d, filter);
+    let routines = c.routines.get(&d.name);
     if filtering && !has_match && !name_match {
         return;
     }
@@ -690,6 +714,9 @@ fn database_rows(
             actions.push(ExplorerAction::NewView { conn: id, db: db_name.clone(), schema: None });
             ui.close();
         }
+        if routines.is_some() {
+            new_routine_buttons(ui, actions, id, &db_name, None, connected);
+        }
         if multi_db && sql && ui.add_enabled(connected, egui::Button::new(tr("New Database…"))).clicked() {
             actions.push(ExplorerAction::NewDatabase(id));
             ui.close();
@@ -733,13 +760,13 @@ fn database_rows(
     };
     if flat {
         if let Some(s) = schemas.first() {
-            object_groups(ui, state, actions, id, &d.name, s, filter, 2, c.cfg.driver);
+            object_groups(ui, state, actions, id, &d.name, s, routines, filter, 2, c.cfg.driver);
         }
         if !c.cfg.driver.is_nosql() { backup_rows(ui, state, actions, id, &d.name, 2); }
         return;
     }
     for s in schemas {
-        schema_rows(ui, state, actions, id, &d.name, schemas, s, filter, name_match);
+        schema_rows(ui, state, actions, id, &d.name, schemas, s, routines, filter, name_match);
     }
     if !c.cfg.driver.is_nosql() { backup_rows(ui, state, actions, id, &d.name, 2); }
 
@@ -754,12 +781,14 @@ fn schema_rows(
     db: &str,
     _all: &[SchemaInfo],
     s: &SchemaInfo,
+    routines: Option<&RoutineList>,
     filter: &str,
     name_match: bool,
 ) {
     let filtering = !filter.is_empty();
     let skey = format!("s:{conn}:{db}:{}", s.name);
-    let s_any = s.tables.iter().any(|t| table_matches(t, filter));
+    let s_any = s.tables.iter().any(|t| table_matches(t, filter))
+        || (filtering && schema_routines(routines, Some(&s.name)).any(|r| routine_matches(r, filter)));
     if filtering && !s_any && !name_match {
         return;
     }
@@ -798,6 +827,9 @@ fn schema_rows(
             actions.push(ExplorerAction::NewView { conn, db: db.to_string(), schema: Some(s.name.clone()) });
             ui.close();
         }
+        if routines.is_some() {
+            new_routine_buttons(ui, actions, conn, db, Some(&s.name), true);
+        }
         if ui.button(tr("Copy Name")).clicked() {
             ui.ctx().copy_text(s.name.clone());
             ui.close();
@@ -807,7 +839,7 @@ fn schema_rows(
         toggle(state, &skey, s_open);
     }
     if s_open {
-        object_groups(ui, state, actions, conn, db, s, filter, 3, Driver::Postgres);
+        object_groups(ui, state, actions, conn, db, s, routines, filter, 3, Driver::Postgres);
     }
 }
 
@@ -840,6 +872,8 @@ fn object_groups(
     conn: ConnId,
     db: &str,
     s: &SchemaInfo,
+    // Procedures and functions of the database (`None` on engines without them).
+    routines: Option<&RoutineList>,
     filter: &str,
     depth: usize,
     // Redis and MongoDB: their own folder names, and no DDL or import (MongoDB can copy). Schema-level
@@ -913,6 +947,150 @@ fn object_groups(
             table_rows(ui, state, actions, tref, t, depth + 1, sql, driver != Driver::Redis);
         }
     }
+    if let Some(list) = routines {
+        for kind in [RoutineKind::Procedure, RoutineKind::Function] {
+            routine_group(ui, state, actions, conn, db, &s.name, list, kind, filter, depth);
+        }
+    }
+}
+
+fn new_routine_buttons(ui: &mut Ui, actions: &mut Vec<ExplorerAction>, conn: ConnId, db: &str, schema: Option<&str>, enabled: bool) {
+    for (kind, label) in [(RoutineKind::Procedure, tr("New Procedure…")), (RoutineKind::Function, tr("New Function…"))] {
+        if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+            actions.push(ExplorerAction::NewRoutine { conn, db: db.to_string(), schema: schema.map(str::to_string), kind });
+            ui.close();
+        }
+    }
+}
+
+/// "Procedures" / "Functions" folder of a schema and its routines.
+#[allow(clippy::too_many_arguments)]
+fn routine_group(
+    ui: &mut Ui,
+    state: &mut ExplorerState,
+    actions: &mut Vec<ExplorerAction>,
+    conn: ConnId,
+    db: &str,
+    schema: &str,
+    list: &RoutineList,
+    kind: RoutineKind,
+    filter: &str,
+    depth: usize,
+) {
+    let p = pal(ui);
+    let filtering = !filter.is_empty();
+    let items: Vec<&RoutineInfo> = schema_routines(Some(list), Some(schema)).filter(|r| r.kind == kind && routine_matches(r, filter)).collect();
+    if filtering && items.is_empty() {
+        return;
+    }
+    let (label, gk) = match kind {
+        RoutineKind::Procedure => (tr("Procedures"), "p"),
+        RoutineKind::Function => (tr("Functions"), "f"),
+    };
+    let gkey = format!("g:{conn}:{db}:{schema}:{gk}");
+    let open = state.expanded.contains(&gkey) || filtering;
+    let n = if list.items.is_some() { items.len().to_string() } else if list.loading { tr("loading…").to_string() } else { String::new() };
+    let row = tree_row(
+        ui,
+        state,
+        RowSpec { key: &gkey, depth, expandable: true, expanded: open, icon: Ico::Folder, label, badge: None, detail: Some((&n, p.muted)), status: None, label_color: None },
+    );
+    if row.resp.clicked() {
+        state.selected_table = None;
+    }
+    row.resp.context_menu(|ui| {
+        let text = if kind == RoutineKind::Procedure { tr("New Procedure…") } else { tr("New Function…") };
+        if ui.button(text).clicked() {
+            actions.push(ExplorerAction::NewRoutine { conn, db: db.to_string(), schema: Some(schema.to_string()), kind });
+            ui.close();
+        }
+    });
+    if row.toggled {
+        toggle(state, &gkey, open);
+    }
+    if !open {
+        return;
+    }
+    if let Some(e) = &list.error {
+        error_line(ui, depth + 1, e);
+    }
+    for r in items {
+        routine_row(ui, state, actions, RoutineRef::new(conn, db, r), r, depth + 1);
+    }
+}
+
+/// Tree key of a routine.
+pub fn routine_key(r: &RoutineRef) -> String {
+    format!("r:{}:{}:{}:{}({}):{:?}", r.conn, r.db, r.schema, r.name, r.signature, r.kind)
+}
+
+fn routine_row(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<ExplorerAction>, rref: RoutineRef, r: &RoutineInfo, depth: usize) {
+    let p = pal(ui);
+    let key = routine_key(&rref);
+    let mut detail: String = r.arguments.chars().take(40).collect();
+    if r.arguments.chars().count() > 40 {
+        detail.push('…');
+    }
+    let detail = format!("({detail})");
+    let row = tree_row(
+        ui,
+        state,
+        RowSpec {
+            key: &key,
+            depth,
+            expandable: false,
+            expanded: false,
+            icon: if r.kind == RoutineKind::Procedure { Ico::Procedure } else { Ico::Function },
+            label: &r.name,
+            badge: None,
+            detail: Some((&detail, p.muted)),
+            status: None,
+            label_color: (!r.valid).then_some(p.error),
+        },
+    );
+    let mut tip = r.display();
+    if !r.returns.is_empty() {
+        tip.push_str(&format!("\n→ {}", r.returns));
+    }
+    if !r.language.is_empty() {
+        tip.push_str(&format!("\n{}", r.language));
+    }
+    if !r.valid {
+        tip.push_str(&format!("\n{}", tr("Invalid: it has compilation errors")));
+    }
+    let resp = row.resp.on_hover_text(tip);
+    if resp.clicked() || resp.secondary_clicked() {
+        state.selected_table = None;
+    }
+    if resp.double_clicked() {
+        actions.push(ExplorerAction::EditRoutine(rref.clone()));
+    }
+    resp.context_menu(|ui| {
+        if ui.button(tr("Execute…")).clicked() {
+            actions.push(ExplorerAction::ExecuteRoutine(rref.clone()));
+            ui.close();
+        }
+        let edit = if r.kind == RoutineKind::Procedure { tr("Edit Procedure…") } else { tr("Edit Function…") };
+        if ui.button(edit).clicked() {
+            actions.push(ExplorerAction::EditRoutine(rref.clone()));
+            ui.close();
+        }
+        if ui.button(tr("Generate DDL")).clicked() {
+            actions.push(ExplorerAction::RoutineDdl(rref.clone()));
+            ui.close();
+        }
+        if ui.button(tr("Copy Name")).clicked() {
+            ui.ctx().copy_text(r.name.clone());
+            ui.close();
+        }
+        ui.separator();
+        new_routine_buttons(ui, actions, rref.conn, &rref.db, Some(&rref.schema), true);
+        ui.separator();
+        if ui.button(RichText::new(tr("Drop…")).color(p.error)).clicked() {
+            actions.push(ExplorerAction::DropRoutine(rref.clone()));
+            ui.close();
+        }
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1106,5 +1284,60 @@ mod tests {
         h.get_by_label("shop").click_secondary(); h.run_steps(2);
         h.get_by_label("Back up database…").click(); h.run_steps(2);
         assert_eq!(h.state().1.as_deref(), Some("shop"));
+    }
+
+    #[test]
+    fn routine_folders_list_routines_and_offer_their_actions() {
+        let mut connection = ConnState::new(ConnectionConfig::new(1, Driver::Postgres));
+        connection.status = ConnStatus::Connected;
+        connection.databases.push(DatabaseInfo { name: "shop".into(), current: true, schemas: Some(vec![SchemaInfo { name: "public".into(), tables: Vec::new() }]) });
+        let routine = |name: &str, kind| RoutineInfo { schema: "public".into(), name: name.into(), kind, signature: "a integer".into(), arguments: "a integer".into(), valid: true, ..Default::default() };
+        connection.routines.insert(
+            "shop".into(),
+            RoutineList { items: Some(vec![routine("add_tax", RoutineKind::Function), routine("archive_orders", RoutineKind::Procedure)]), ..Default::default() },
+        );
+        let mut explorer = ExplorerState::default();
+        for key in ["c:1", "d:1:shop", "s:1:shop:public"] {
+            explorer.expanded.insert(key.into());
+        }
+        let mut first = true;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(400.0, 600.0)).build_ui_state(move |ui, state: &mut (ExplorerState, Vec<String>)| {
+            if std::mem::take(&mut first) { theme::install_fonts(ui.ctx()); theme::apply(ui.ctx(), true); return; }
+            for action in show(ui, &mut state.0, std::slice::from_ref(&connection)) {
+                let text = match action {
+                    ExplorerAction::ExecuteRoutine(r) => format!("execute {}({})", r.name, r.signature),
+                    ExplorerAction::EditRoutine(r) => format!("edit {}", r.name),
+                    ExplorerAction::DropRoutine(r) => format!("drop {:?} {}", r.kind, r.name),
+                    ExplorerAction::NewRoutine { schema, kind, .. } => format!("new {kind:?} in {schema:?}"),
+                    _ => continue,
+                };
+                state.1.push(text);
+            }
+        }, (explorer, Vec::new()));
+        h.run_steps(3);
+        assert!(h.query_by_label("Procedures").is_some() && h.query_by_label("Functions").is_some());
+        assert!(h.query_by_label("add_tax").is_none(), "folders start collapsed");
+        h.get_by_label("Functions").click_secondary();
+        h.run_steps(2);
+        h.get_by_label("New Function…").click();
+        h.run_steps(2);
+        h.state_mut().0.expanded.insert("g:1:shop:public:f".into());
+        h.run_steps(2);
+        assert!(h.query_by_label("archive_orders").is_none(), "procedures live in their own folder");
+        h.get_by_label("add_tax").click_secondary();
+        h.run_steps(2);
+        h.get_by_label("Execute…").click();
+        h.run_steps(2);
+        h.get_by_label("add_tax").click_secondary();
+        h.run_steps(2);
+        h.get_by_label("Edit Function…").click();
+        h.run_steps(2);
+        assert_eq!(h.state().1, ["new Function in Some(\"public\")", "execute add_tax(a integer)", "edit add_tax"]);
+
+        // Filtering by name finds routines too.
+        h.state_mut().0.expanded.clear();
+        h.state_mut().0.filter = "archive".into();
+        h.run_steps(3);
+        assert!(h.query_by_label("archive_orders").is_some());
     }
 }

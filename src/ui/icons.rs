@@ -19,6 +19,10 @@ pub enum Ico {
     View,
     Column,
     Key,
+    /// A stored procedure (Database Explorer).
+    Procedure,
+    /// A stored function.
+    Function,
     Plus,
     Minus,
     Refresh,
@@ -150,6 +154,16 @@ pub fn paint(painter: &Painter, rect: Rect, ico: Ico, color: Color32, p: &Palett
             line(&[(7.7, 8.0), (14.5, 8.0)], c);
             line(&[(12.0, 8.0), (12.0, 10.8)], c);
             line(&[(14.3, 8.0), (14.3, 10.3)], c);
+        }
+        Ico::Procedure => {
+            let c = obj(p.routine_icon);
+            painter.rect_stroke(Rect::from_min_max(at(1.5, 2.5), at(14.5, 13.5)), 2.0 * s, st(c), StrokeKind::Middle);
+            painter.add(Shape::convex_polygon(vec![at(6.0, 5.2), at(11.0, 8.0), at(6.0, 10.8)], c, Stroke::NONE));
+        }
+        Ico::Function => {
+            let c = obj(p.routine_icon);
+            painter.rect_stroke(Rect::from_min_max(at(1.5, 2.5), at(14.5, 13.5)), 2.0 * s, st(c), StrokeKind::Middle);
+            painter.text(at(8.0, 8.2), egui::Align2::CENTER_CENTER, "fx", FontId::proportional(8.5 * s), c);
         }
         Ico::Plus => {
             line(&[(8.0, 2.5), (8.0, 13.5)], color);

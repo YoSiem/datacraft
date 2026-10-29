@@ -18,6 +18,8 @@ pub enum DropKind {
     Truncate,
     /// Rename the table to `new_name`.
     Rename,
+    Procedure,
+    Function,
 }
 
 impl From<ObjectKind> for DropKind {
@@ -43,6 +45,8 @@ pub struct DropDialog {
     confirm: String,
     /// New name (`Rename`).
     pub new_name: String,
+    /// Procedures and functions: the argument types that identify the overload.
+    pub signature: String,
     focus_name: bool,
     pub running: bool,
     pub error: Option<String>,
@@ -77,6 +81,10 @@ pub fn object_sql(driver: Driver, kind: DropKind, schema: &str, name: &str, new_
         // SQLite has no TRUNCATE.
         DropKind::Truncate if driver == Driver::Sqlite => format!("delete from {}", object(schema, name)),
         DropKind::Truncate => format!("truncate table {}", object(schema, name)),
+        DropKind::Procedure | DropKind::Function => {
+            let kind = if kind == DropKind::Procedure { crate::db::routines::RoutineKind::Procedure } else { crate::db::routines::RoutineKind::Function };
+            crate::db::routines::drop_sql(driver, kind, schema, name, "")
+        }
         DropKind::Rename => {
             let new_name = &effective_name(driver, new_name);
             match driver {
@@ -103,13 +111,41 @@ impl DropDialog {
         Self::new(conn, driver, kind, db, schema, name)
     }
 
+    pub fn routine(driver: Driver, r: &crate::db::routines::RoutineRef) -> Self {
+        let kind = match r.kind {
+            crate::db::routines::RoutineKind::Procedure => DropKind::Procedure,
+            crate::db::routines::RoutineKind::Function => DropKind::Function,
+        };
+        Self { signature: r.signature.clone(), ..Self::new(r.conn, driver, kind, r.db.clone(), r.schema.clone(), r.name.clone()) }
+    }
+
+    /// The routine this dialog drops.
+    pub fn routine_ref(&self) -> Option<crate::db::routines::RoutineRef> {
+        let kind = match self.kind {
+            DropKind::Procedure => crate::db::routines::RoutineKind::Procedure,
+            DropKind::Function => crate::db::routines::RoutineKind::Function,
+            _ => return None,
+        };
+        Some(crate::db::routines::RoutineRef {
+            conn: self.conn,
+            db: self.db.clone(),
+            schema: self.schema.clone(),
+            name: self.name.clone(),
+            kind,
+            signature: self.signature.clone(),
+        })
+    }
+
     fn new(conn: ConnId, driver: Driver, kind: DropKind, db: String, schema: String, name: String) -> Self {
         let new_name = if kind == DropKind::Rename { name.clone() } else { String::new() };
-        Self { conn, driver, kind, db, schema, name, confirm: String::new(), new_name, focus_name: true, running: false, error: None }
+        Self { conn, driver, kind, db, schema, name, confirm: String::new(), new_name, signature: String::new(), focus_name: true, running: false, error: None }
     }
 
     pub fn sql(&self) -> String {
-        object_sql(self.driver, self.kind, &self.schema, &self.name, &self.new_name)
+        match self.routine_ref() {
+            Some(r) => crate::db::routines::drop_sql(self.driver, r.kind, &r.schema, &r.name, &r.signature),
+            None => object_sql(self.driver, self.kind, &self.schema, &self.name, &self.new_name),
+        }
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Option<DropResult> {
@@ -127,6 +163,8 @@ impl DropDialog {
             DropKind::View => (tr("Drop View"), trf("Drop view “{name}”?", &[("name", &self.name)])),
             DropKind::Truncate => (tr("Truncate Table"), trf("Delete every row of table “{name}”?", &[("name", &self.name)])),
             DropKind::Rename => (tr("Rename Table"), trf("Rename table “{name}” to:", &[("name", &self.name)])),
+            DropKind::Procedure => (tr("Drop Procedure"), trf("Drop procedure “{name}”?", &[("name", &self.name)])),
+            DropKind::Function => (tr("Drop Function"), trf("Drop function “{name}”?", &[("name", &self.name)])),
         };
         let rename = self.kind == DropKind::Rename;
         let needs_typing = self.kind == DropKind::Database;

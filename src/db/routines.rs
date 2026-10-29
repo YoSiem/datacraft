@@ -9,7 +9,9 @@ mod ddl;
 mod parse;
 
 pub use call::{ArgValue, call_sql, callable};
-pub use ddl::{RoutineStatements, create_sql, drop_sql, final_name, input_signature, routine_statements};
+pub use ddl::{RoutineStatements, drop_sql, final_name, routine_statements};
+#[cfg(test)]
+pub use ddl::create_sql;
 pub use parse::parse_definition;
 
 use super::{Driver, Session};
@@ -86,12 +88,6 @@ pub struct RoutineList {
     pub items: Option<Vec<RoutineInfo>>,
     pub loading: bool,
     pub error: Option<String>,
-}
-
-impl RoutineList {
-    pub fn find(&self, r: &RoutineRef) -> Option<&RoutineInfo> {
-        self.items.as_ref()?.iter().find(|i| i.schema == r.schema && i.name == r.name && i.kind == r.kind && i.signature == r.signature)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

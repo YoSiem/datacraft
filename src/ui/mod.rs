@@ -19,6 +19,8 @@ pub mod icons;
 pub mod object_browser;
 pub mod object_organization;
 pub mod results;
+pub mod routine_dialog;
+pub mod routine_execute;
 pub mod schema_search;
 pub mod theme;
 pub mod view_dialog;
