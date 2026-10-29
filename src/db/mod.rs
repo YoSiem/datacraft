@@ -16,6 +16,7 @@ pub mod mysql;
 pub mod oracle;
 pub mod postgres;
 pub mod redis_db;
+pub mod routines;
 pub mod snowflake;
 pub mod sqlite;
 pub mod url;
