@@ -291,6 +291,8 @@ pub struct DataCraftApp {
     save_on_row_change: bool,
     dialog: Option<ConnectionDialog>,
     confirm_delete: Option<ConnId>,
+    /// "Explain Analyze" of a statement that writes, waiting for confirmation: (console, explain).
+    confirm_analyze: Option<(usize, String)>,
     /// A connection imported without its password, and the password being typed.
     ask_password: Option<(ConnId, String)>,
     /// "New Database" / "New Table" dialog.
@@ -389,6 +391,7 @@ impl DataCraftApp {
             save_on_row_change: persisted.save_on_row_change,
             dialog: None,
             confirm_delete: None,
+            confirm_analyze: None,
             ask_password: None,
             create: None,
             drop: None,
@@ -2397,6 +2400,7 @@ impl DataCraftApp {
     fn modal_open(&self) -> bool {
         self.backup.is_some() || self.script.is_some() || self.object_browser.schema_search.open || self.object_browser.has_dialog() || self.dialog.is_some()
             || self.confirm_delete.is_some()
+            || self.confirm_analyze.is_some()
             || self.create.is_some()
             || self.views.dialog.is_some()
             || self.drop.is_some()
@@ -3210,6 +3214,16 @@ impl DataCraftApp {
                     let console = self.consoles[idx].id;
                     self.worker.send(Request::Cancel { console });
                 }
+                ConsoleAction::ExplainAnalyze { statement, explain } => {
+                    let id = self.consoles[idx].id;
+                    if self.consoles[idx].table.is_none() && !self.consoles[idx].is_busy() && self.guard(Discard::Run(id, false)) {
+                        if is_query(&statement) {
+                            self.run_statements(idx, vec![explain]);
+                        } else {
+                            self.confirm_analyze = Some((idx, explain));
+                        }
+                    }
+                }
                 ConsoleAction::RunStatements(statements) => {
                     let id = self.consoles[idx].id;
                     if self.consoles[idx].table.is_none() && !self.consoles[idx].is_busy() && self.guard(Discard::Run(id, false)) {
@@ -3453,6 +3467,39 @@ impl DataCraftApp {
                     self.connect(id);
                 }
                 Some(false) => self.ask_password = None,
+                None => {}
+            }
+        }
+
+        if let Some((idx, explain)) = self.confirm_analyze.clone() {
+            let mut decision = None;
+            egui::Modal::new(egui::Id::new("confirm_analyze")).frame(frame).show(ctx, |ui| {
+                ui.set_width(400.0);
+                ui.label(RichText::new(tr("Explain Analyze")).font(theme::bold(15.0)));
+                ui.add_space(8.0);
+                ui.label(tr("Explain Analyze runs the statement to measure it, and this one changes data or structure. Run it anyway?"));
+                ui.add_space(16.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if theme::primary_button(ui, tr("Run")).clicked() {
+                        decision = Some(true);
+                    }
+                    if theme::secondary_button(ui, tr("Cancel")).clicked() {
+                        decision = Some(false);
+                    }
+                });
+            });
+            if ctx.input(|i| i.key_pressed(Key::Escape)) {
+                decision = Some(false);
+            }
+            match decision {
+                Some(true) => {
+                    self.confirm_analyze = None;
+                    if idx < self.consoles.len() && !self.consoles[idx].is_busy() {
+                        self.run_statements(idx, vec![explain]);
+                    }
+                }
+                Some(false) => self.confirm_analyze = None,
                 None => {}
             }
         }
@@ -4115,7 +4162,7 @@ mod tests {
             active: 1, next_console_id: 5, console_counter: 4, result_salt: 0,
             explorer: ExplorerState::default(), backup: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(),
             save_on_row_change: false,
-            dialog: None, confirm_delete: None, ask_password: None, create: None, drop: None, views: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
+            dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
             show_about: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,

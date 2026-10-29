@@ -174,6 +174,9 @@ pub struct ResultView {
     pub readonly_reason: Option<String>,
     /// true once the app has decided whether it is editable.
     pub edit_checked: bool,
+    /// An explain plan the result holds, shown as a tree unless `plan_as_text`.
+    plan: Option<crate::db::plan::PlanNode>,
+    plan_as_text: bool,
 }
 
 impl ResultView {
@@ -282,7 +285,10 @@ impl ResultView {
     pub fn new(rs: ResultSet, salt: u64) -> Self {
         let title = statement_title(&rs.statement);
         let order = (0..rs.rows.len()).collect();
+        let plan = crate::db::plan::detect(&rs);
         Self {
+            plan,
+            plan_as_text: false,
             cell_editor: None,
             rs,
             title,
@@ -1212,6 +1218,15 @@ pub fn show_result(
             )
         });
         return GridResponse::default();
+    }
+    if let Some(plan) = view.plan.as_ref() {
+        if !view.plan_as_text {
+            view.plan_as_text = crate::ui::plan_view::show(ui, plan, view.salt);
+            return GridResponse::default();
+        }
+        if ui.small_button(tr("Show as Tree")).clicked() {
+            view.plan_as_text = false;
+        }
     }
 
     let mut actions: Vec<GridAction> = Vec::new();
