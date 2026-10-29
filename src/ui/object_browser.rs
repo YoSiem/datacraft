@@ -1195,7 +1195,7 @@ fn object_kind(kind: ObjectKind) -> &'static str {
         tr("View")
     }
 }
-fn format_bytes(bytes: u64) -> String {
+pub(crate) fn format_bytes(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes} B")
     } else if bytes < 1024 * 1024 {
