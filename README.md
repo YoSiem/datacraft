@@ -149,8 +149,25 @@ Every engine reached over TCP (all but SQLite, Snowflake and Kusto) can connect 
 
 - The first time a bastion is reached, Test Connection shows its key fingerprint and asks before trusting it. Keys already in `~/.ssh/known_hosts` are trusted, others go to DataCraft's own `ssh_known_hosts`, and a bastion whose key changed is refused, naming both fingerprints.
 - The sessions of a data source share one SSH connection, with keepalives every 30 seconds. If it drops, the next query opens it again.
-- With TLS, the certificate is still checked against the database's own host name for SQL Server, ClickHouse and InfluxDB. MySQL and MongoDB check the certificate chain but not the name, which can't match the tunnel's local address. A replica set or `mongodb+srv` address can't be used through a tunnel: point it at one server.
+- With TLS, the certificate is still checked against the database's own host name for PostgreSQL, MySQL, MariaDB, SQL Server, ClickHouse and InfluxDB. MongoDB checks the certificate chain but not the name, which can't match the tunnel's local address. A replica set or `mongodb+srv` address can't be used through a tunnel: point it at one server.
 - SSH passwords and passphrases are kept in the system keychain, like database passwords.
+
+### SSL
+
+PostgreSQL, MySQL and MariaDB data sources choose how the connection is encrypted in the **SSL** part of the **SSH/SSL** tab:
+
+| Mode | Encrypted | Certificate |
+| --- | --- | --- |
+| Prefer (default) | When the server offers it | Not checked |
+| Disable | Never | — |
+| Require | Always | Not checked |
+| Verify CA | Always | Signed by the CA file, or by a CA the system trusts |
+| Verify full | Always | Signed as above and issued for the host |
+
+- **Client certificates:** a client certificate and key (PEM; an encrypted PKCS#8 key takes its passphrase, kept in the keychain) sign users in when the server asks for one.
+- **Renewed certificates:** the files are read on every connect, so a renewed certificate needs no edit.
+- **Test Connection** names the TLS version and cipher. A refused certificate says which CA didn't sign it, or which host it wasn't issued for.
+- **Through an SSH tunnel,** the certificate is still checked against the database's own host name.
 
 Support varies by engine, server version and account privileges. [Oracle Instant Client](https://www.oracle.com/database/technologies/instant-client.html) must be installed separately for Oracle connections.
 

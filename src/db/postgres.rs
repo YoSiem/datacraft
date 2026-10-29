@@ -1,19 +1,112 @@
-//! PostgreSQL driver on top of `tokio-postgres` (no TLS).
+//! PostgreSQL driver on top of `tokio-postgres`, with TLS through rustls (`PgTls`).
 //!
 //! It uses the simple protocol: values already arrive as text and it accepts
 //! several `;`-separated statements in a single call.
 
+use std::future::Future;
+use std::io;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use futures_util::TryStreamExt;
-use tokio_postgres::{Client, NoTls, SimpleQueryMessage};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio_postgres::config::SslMode;
+use tokio_postgres::tls::{ChannelBinding, MakeTlsConnect, TlsConnect, TlsStream};
+use tokio_postgres::{Client, SimpleQueryMessage, Socket};
+use tokio_rustls::TlsConnector;
+use tokio_rustls::rustls::ClientConfig;
+use tokio_rustls::rustls::pki_types::ServerName;
 
+use super::tls::{self, TlsMode};
 use super::{ColumnInfo, ConnectionConfig, ObjectKind, ResultSet, SchemaInfo, TableInfo};
-use crate::i18n::trf;
+use crate::i18n::{tr, trf};
 
 pub struct PgSession {
     client: Client,
+    /// Also for the cancel requests, which go over a connection of their own.
+    tls: PgTls,
+}
+
+/// The data source's TLS for tokio-postgres: its rustls client (none for Disable), checking the
+/// certificate against the database's own host name (through an SSH tunnel, not 127.0.0.1).
+#[derive(Clone)]
+pub struct PgTls {
+    config: Option<Arc<ClientConfig>>,
+    name: String,
+}
+
+impl PgTls {
+    fn new(cfg: &ConnectionConfig, host: &str) -> anyhow::Result<(Self, SslMode)> {
+        let name = cfg.tunnel_host.clone().unwrap_or_else(|| host.to_string());
+        let mode = match cfg.tls.mode {
+            TlsMode::Disable => SslMode::Disable,
+            TlsMode::Prefer => SslMode::Prefer,
+            TlsMode::Require | TlsMode::VerifyCa | TlsMode::VerifyFull => SslMode::Require,
+        };
+        let config = (mode != SslMode::Disable).then(|| tls::client_config(&cfg.tls)).transpose()?.map(Arc::new);
+        Ok((Self { config, name }, mode))
+    }
+}
+
+impl MakeTlsConnect<Socket> for PgTls {
+    type Stream = PgTlsStream<Socket>;
+    type TlsConnect = PgTlsConnect;
+    type Error = io::Error;
+
+    fn make_tls_connect(&mut self, _domain: &str) -> io::Result<PgTlsConnect> {
+        let name = ServerName::try_from(self.name.clone())
+            .map_err(|_| io::Error::other(trf("“{host}” is not a valid server name for TLS", &[("host", &self.name)])))?;
+        Ok(PgTlsConnect { config: self.config.clone(), name })
+    }
+}
+
+pub struct PgTlsConnect {
+    config: Option<Arc<ClientConfig>>,
+    name: ServerName<'static>,
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> TlsConnect<S> for PgTlsConnect {
+    type Stream = PgTlsStream<S>;
+    type Error = io::Error;
+    type Future = Pin<Box<dyn Future<Output = io::Result<PgTlsStream<S>>> + Send>>;
+
+    fn connect(self, stream: S) -> Self::Future {
+        Box::pin(async move {
+            let config = self.config.ok_or_else(|| io::Error::other(tr("TLS is disabled for this data source")))?;
+            Ok(PgTlsStream(TlsConnector::from(config).connect(self.name, stream).await?))
+        })
+    }
+}
+
+pub struct PgTlsStream<S>(tokio_rustls::client::TlsStream<S>);
+
+impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for PgTlsStream<S> {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for PgTlsStream<S> {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.0).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_shutdown(cx)
+    }
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> TlsStream for PgTlsStream<S> {
+    fn channel_binding(&self) -> ChannelBinding {
+        ChannelBinding::none()
+    }
 }
 
 /// Turns a tokio-postgres error into a readable message (message + detail + hint).
@@ -35,9 +128,12 @@ fn pg_error(e: tokio_postgres::Error) -> anyhow::Error {
 
 impl PgSession {
     pub async fn connect(cfg: &ConnectionConfig) -> anyhow::Result<Self> {
+        let host = if cfg.host.trim().is_empty() { "localhost" } else { cfg.host.trim() };
+        let (tls, ssl_mode) = PgTls::new(cfg, host)?;
         let mut pg = tokio_postgres::Config::new();
-        pg.host(if cfg.host.trim().is_empty() { "localhost" } else { cfg.host.trim() })
+        pg.host(host)
             .port(if cfg.port == 0 { 5432 } else { cfg.port })
+            .ssl_mode(ssl_mode)
             .user(&cfg.user)
             .password(&cfg.password)
             .application_name("DataCraft")
@@ -46,12 +142,15 @@ impl PgSession {
             pg.dbname(cfg.database.trim());
         }
 
-        let (client, connection) = pg.connect(NoTls).await.map_err(pg_error)?;
+        let (client, connection) = pg.connect(tls.clone()).await.map_err(|e| match tls::explain(&e, &cfg.tls, &tls.name) {
+            Some(reason) => anyhow!(reason),
+            None => pg_error(e),
+        })?;
         // The connection is what actually reads/writes the socket; it must live in its own task.
         tokio::spawn(async move {
             let _ = connection.await;
         });
-        Ok(Self { client })
+        Ok(Self { client, tls })
     }
 
     pub async fn current_database(&mut self) -> anyhow::Result<String> {
@@ -92,8 +191,14 @@ impl PgSession {
     }
 
     /// Token to cancel the running query from another connection (`pg_cancel_backend`).
-    pub fn cancel_token(&self) -> tokio_postgres::CancelToken {
-        self.client.cancel_token()
+    pub fn cancel_token(&self) -> (tokio_postgres::CancelToken, PgTls) {
+        (self.client.cancel_token(), self.tls.clone())
+    }
+
+    /// "TLSv1.3 TLS_AES_256_GCM_SHA384", or None for a plain connection.
+    pub async fn tls_description(&mut self) -> Option<String> {
+        let row = self.client.query_opt("SELECT version, cipher FROM pg_stat_ssl WHERE pid = pg_backend_pid() AND ssl", &[]).await.ok()??;
+        Some(format!("{} {}", row.get::<_, String>(0), row.get::<_, String>(1)))
     }
 
     pub async fn execute(&mut self, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
@@ -311,5 +416,98 @@ mod tests {
         let err = s.execute("SELECT * FROM dc_test.missing", 10).await.unwrap_err();
         assert!(err.to_string().contains("missing"), "{err}");
         s.execute("DROP SCHEMA dc_test CASCADE", 10).await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tls_tests {
+    //! TLS negotiation against a fake server in the test (no PostgreSQL needed): it answers the
+    //! SSLRequest as PostgreSQL does, then refuses the login with a message that says how the
+    //! client came in.
+    use super::*;
+    use crate::db::Driver;
+    use crate::db::tls::test_pki::{Pki, pki};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn refuse<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, rest_of_startup: usize, how: &str) {
+        let mut startup = vec![0; rest_of_startup];
+        stream.read_exact(&mut startup).await.unwrap();
+        let mut body = Vec::new();
+        for (field, value) in [(b'S', "FATAL"), (b'V', "FATAL"), (b'C', "28000"), (b'M', how)] {
+            body.push(field);
+            body.extend_from_slice(value.as_bytes());
+            body.push(0);
+        }
+        body.push(0);
+        let mut message = vec![b'E'];
+        message.extend_from_slice(&(body.len() as u32 + 4).to_be_bytes());
+        message.extend_from_slice(&body);
+        stream.write_all(&message).await.unwrap();
+        stream.flush().await.unwrap();
+    }
+
+    /// A server that offers TLS (with the test PKI's `localhost` certificate) or not.
+    async fn server(pki: Option<&Pki>) -> u16 {
+        let acceptor = pki.map(|p| p.acceptor(false));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut tcp, _)) = listener.accept().await {
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    let mut head = [0u8; 8];
+                    if tcp.read_exact(&mut head).await.is_err() {
+                        return;
+                    }
+                    let len = u32::from_be_bytes(head[..4].try_into().unwrap()) as usize;
+                    if u32::from_be_bytes(head[4..].try_into().unwrap()) != 80877103 {
+                        return refuse(&mut tcp, len - 8, "plain login").await;
+                    }
+                    let Some(acceptor) = acceptor else {
+                        tcp.write_all(b"N").await.unwrap();
+                        let mut len = [0u8; 4];
+                        tcp.read_exact(&mut len).await.unwrap();
+                        return refuse(&mut tcp, u32::from_be_bytes(len) as usize - 4, "plain login after refusing TLS").await;
+                    };
+                    tcp.write_all(b"S").await.unwrap();
+                    let Ok(mut tls) = acceptor.accept(tcp).await else { return };
+                    let mut len = [0u8; 4];
+                    tls.read_exact(&mut len).await.unwrap();
+                    refuse(&mut tls, u32::from_be_bytes(len) as usize - 4, "login over TLS").await;
+                });
+            }
+        });
+        port
+    }
+
+    async fn connect(port: u16, host: &str, tls: tls::TlsSettings) -> String {
+        let mut cfg = ConnectionConfig::new(1, Driver::Postgres);
+        (cfg.host, cfg.port, cfg.tls) = (host.into(), port, tls);
+        match PgSession::connect(&cfg).await {
+            Ok(_) => "connected".into(),
+            Err(e) => format!("{e:#}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ssl_modes_against_a_server_with_and_without_tls() {
+        let pki = pki();
+        let with_tls = server(Some(&pki)).await;
+        let plain = server(None).await;
+        let s = |mode, ca: &str| tls::TlsSettings { mode, ca_file: ca.into(), ..Default::default() };
+
+        assert!(connect(with_tls, "localhost", s(TlsMode::VerifyFull, &pki.ca_file)).await.contains("login over TLS"));
+        assert!(connect(with_tls, "localhost", s(TlsMode::Require, "")).await.contains("login over TLS"));
+        assert!(connect(with_tls, "localhost", s(TlsMode::Prefer, "")).await.contains("login over TLS"));
+        assert!(connect(with_tls, "localhost", s(TlsMode::Disable, "")).await.contains("plain login"));
+        let err = connect(with_tls, "127.0.0.1", s(TlsMode::VerifyFull, &pki.ca_file)).await;
+        assert!(err.contains("isn't issued for 127.0.0.1"), "{err}");
+        assert!(connect(with_tls, "127.0.0.1", s(TlsMode::VerifyCa, &pki.ca_file)).await.contains("login over TLS"));
+
+        // Prefer falls back to plain text; the stricter modes refuse.
+        assert!(connect(plain, "localhost", s(TlsMode::Prefer, "")).await.contains("plain login after refusing TLS"));
+        let err = connect(plain, "localhost", s(TlsMode::Require, "")).await;
+        assert!(!err.contains("login"), "{err}");
     }
 }

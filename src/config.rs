@@ -24,7 +24,8 @@ fn properties_entry(id: u64) -> Option<keyring::Entry> {
     keyring::Entry::new(KEYCHAIN_SERVICE, &format!("connection-{id}-properties")).ok()
 }
 
-/// The SSH tunnel's password and key passphrase, as a JSON object.
+/// The SSH tunnel's password and key passphrase, and the TLS client key's passphrase, as a JSON
+/// object.
 fn ssh_entry(id: u64) -> Option<keyring::Entry> {
     keyring::Entry::new(KEYCHAIN_SERVICE, &format!("connection-{id}-ssh")).ok()
 }
@@ -34,6 +35,7 @@ fn ssh_entry(id: u64) -> Option<keyring::Entry> {
 struct SshSecrets {
     password: String,
     passphrase: String,
+    tls_key_passphrase: String,
 }
 
 pub fn load_connections() -> Vec<ConnectionConfig> {
@@ -68,10 +70,10 @@ pub fn load_connections() -> Vec<ConnectionConfig> {
             .and_then(|json| serde_json::from_str(&json).ok())
             .unwrap_or_default();
         fill_secret_properties(c, &secrets);
-        if c.ssh.enabled
+        if (c.ssh.enabled || !c.tls.key_file.trim().is_empty())
             && let Some(ssh) = ssh_entry(c.id).and_then(|e| e.get_password().ok()).and_then(|json| serde_json::from_str::<SshSecrets>(&json).ok())
         {
-            (c.ssh.password, c.ssh.passphrase) = (ssh.password, ssh.passphrase);
+            (c.ssh.password, c.ssh.passphrase, c.tls.key_passphrase) = (ssh.password, ssh.passphrase, ssh.tls_key_passphrase);
         }
     }
     if leaked && let Err(e) = save_connections(&list) {
@@ -108,8 +110,13 @@ pub fn store_secrets(cfg: &ConnectionConfig) {
         cfg.secret_properties().into_iter().map(|(k, v)| (k.trim().to_string(), v)).collect();
     let json = if secrets.is_empty() { String::new() } else { serde_json::to_string(&secrets).unwrap_or_default() };
     store(properties_entry(cfg.id), &json);
-    let ssh = SshSecrets { password: cfg.ssh.password.clone(), passphrase: cfg.ssh.passphrase.clone() };
-    let json = if cfg.ssh.has_secrets() { serde_json::to_string(&ssh).unwrap_or_default() } else { String::new() };
+    let ssh = SshSecrets {
+        password: cfg.ssh.password.clone(),
+        passphrase: cfg.ssh.passphrase.clone(),
+        tls_key_passphrase: cfg.tls.key_passphrase.clone(),
+    };
+    let any = cfg.ssh.has_secrets() || !cfg.tls.key_passphrase.is_empty();
+    let json = if any { serde_json::to_string(&ssh).unwrap_or_default() } else { String::new() };
     store(ssh_entry(cfg.id), &json);
 }
 
@@ -181,8 +188,10 @@ mod tests {
             passphrase: "SSH-PASSPHRASE".into(),
             ..Default::default()
         };
+        cfg.tls.key_file = "~/certs/client.key".into();
+        cfg.tls.key_passphrase = "TLS-PASSPHRASE".into();
         let json = serde_json::to_string(&cfg.without_secrets()).unwrap();
-        assert!(!json.contains("SSH-PASSWORD") && !json.contains("SSH-PASSPHRASE"), "{json}");
+        assert!(!json.contains("SSH-PASSWORD") && !json.contains("SSH-PASSPHRASE") && !json.contains("TLS-PASSPHRASE"), "{json}");
         let loaded: ConnectionConfig = serde_json::from_str(&json).unwrap();
         assert_eq!((loaded.ssh.host.as_str(), loaded.ssh.key_file.as_str()), ("bastion.example", "~/.ssh/id_ed25519"));
         // Files from before the SSH tab load without one.

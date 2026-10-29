@@ -4,6 +4,7 @@
 
 use crate::db::url::{apply_jdbc_url, jdbc_url};
 use crate::db::ssh::{self, SshAuth};
+use crate::db::tls::{self, TlsMode};
 use crate::db::{AuthMode, ConnectionConfig, Driver, is_secret_property, snowflake};
 use crate::i18n::{tr, trf};
 use crate::ui::icons::{self, Ico};
@@ -110,7 +111,7 @@ impl ConnectionDialog {
     fn has_tab(driver: Driver, tab: Tab) -> bool {
         match tab {
             Tab::General | Tab::Options => true,
-            Tab::Ssh => driver.supports_ssh(),
+            Tab::Ssh => driver.supports_ssh() || tls::supported(driver),
             Tab::Advanced => driver == Driver::Snowflake,
         }
     }
@@ -174,6 +175,9 @@ impl ConnectionDialog {
             Driver::Sqlite => Ok(()),
             _ if cfg.host.trim().is_empty() => Err(tr("Host is required").into()),
             Driver::Snowflake => snowflake::credentials(cfg).map(|_| ()).map_err(|e| e.to_string()),
+            _ if tls::supported(cfg.driver) && cfg.tls.mode != TlsMode::Disable && cfg.tls.cert_file.trim().is_empty() != cfg.tls.key_file.trim().is_empty() => {
+                Err(tr("The client certificate and the client key go together").into())
+            }
             _ if ssh::tunnels(cfg) => match &cfg.ssh {
                 s if s.host.trim().is_empty() => Err(tr("The SSH host is required").into()),
                 s if s.user.trim().is_empty() => Err(tr("The SSH user is required").into()),
@@ -417,7 +421,7 @@ impl ConnectionDialog {
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            let tabs = [(Tab::General, tr("General")), (Tab::Options, tr("Options")), (Tab::Ssh, "SSH"), (Tab::Advanced, tr("Advanced"))];
+            let tabs = [(Tab::General, tr("General")), (Tab::Options, tr("Options")), (Tab::Ssh, "SSH/SSL"), (Tab::Advanced, tr("Advanced"))];
             for (tab, label) in tabs.into_iter().filter(|(t, _)| Self::has_tab(driver, *t)) {
                 if theme::tab(ui, self.tab == tab, None, label, false).0.clicked() {
                     self.tab = tab;
@@ -428,7 +432,16 @@ impl ConnectionDialog {
         egui::ScrollArea::vertical().id_salt("ds_form").auto_shrink([false, false]).show(ui, |ui| match self.tab {
             Tab::General => self.general(ui, p),
             Tab::Options => self.options(ui),
-            Tab::Ssh => self.ssh(ui, p),
+            Tab::Ssh => {
+                let driver = self.items[self.selected].cfg.driver;
+                if driver.supports_ssh() {
+                    self.ssh(ui, p);
+                }
+                if tls::supported(driver) {
+                    ui.add_space(22.0);
+                    self.ssl(ui, p);
+                }
+            }
             Tab::Advanced => self.properties(ui, p),
         });
     }
@@ -545,6 +558,45 @@ impl ConnectionDialog {
                 }
             }
         }
+    }
+
+    /// SSL part of the SSH/SSL tab (PostgreSQL, MySQL, MariaDB): the mode and the files, read on
+    /// every connect.
+    fn ssl(&mut self, ui: &mut Ui, p: &Palette) {
+        let t = &mut self.items[self.selected].cfg.tls;
+        ui.label(RichText::new("SSL").strong());
+        ui.add_space(8.0);
+        egui::Grid::new("ds_ssl").num_columns(2).spacing([14.0, 10.0]).min_col_width(LABEL_WIDTH - 14.0).show(ui, |ui| {
+            ui.label(tr("Mode:"));
+            ui.vertical(|ui| {
+                egui::ComboBox::from_id_salt("ds_ssl_mode").icon(chevron).selected_text(t.mode.label()).width(ui.available_width()).show_ui(ui, |ui| {
+                    for m in TlsMode::ALL {
+                        ui.selectable_value(&mut t.mode, m, m.label()).on_hover_text(m.hint());
+                    }
+                });
+                ui.label(RichText::new(t.mode.hint()).size(12.0).color(p.muted));
+            });
+            ui.end_row();
+            let on = t.mode != TlsMode::Disable;
+            for (label, file, title, hint) in [
+                (tr("CA file:"), &mut t.ca_file, tr("CA Certificate"), tr("<system certificates>")),
+                (tr("Client certificate:"), &mut t.cert_file, tr("Client Certificate"), ""),
+                (tr("Client key:"), &mut t.key_file, tr("Client Key"), ""),
+            ] {
+                ui.add_enabled(on, egui::Label::new(label));
+                ui.add_enabled_ui(on, |ui| file_row(ui, file, title, hint));
+                ui.end_row();
+            }
+            ui.add_enabled(on, egui::Label::new(tr("Key passphrase:")));
+            ui.add_enabled_ui(on, |ui| password_field(ui, &mut t.key_passphrase));
+            ui.end_row();
+        });
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(tr("The CA file is used by Verify CA and Verify full. The client certificate and key are only needed when the server signs users in by certificate."))
+                .size(12.0)
+                .color(p.muted),
+        );
     }
 
     /// SSH tab: the tunnel through a bastion. The General tab's host and port stay the database's
@@ -783,6 +835,19 @@ fn mark(ui: &mut Ui, ok: bool, p: &Palette) {
 fn chevron(ui: &Ui, rect: Rect, _: &egui::style::WidgetVisuals, _open: bool) {
     let p = theme::pal(ui);
     icons::paint(ui.painter(), Rect::from_center_size(rect.center(), vec2(14.0, 14.0)), Ico::ChevronDown, p.muted, &p, true);
+}
+
+/// A file path with Browse….
+fn file_row(ui: &mut Ui, file: &mut String, title: &str, hint: &str) {
+    ui.horizontal(|ui| {
+        let w = (ui.available_width() - 90.0).max(160.0);
+        ui.add(egui::TextEdit::singleline(file).hint_text(hint).margin(egui::vec2(8.0, 5.0)).desired_width(w));
+        if ui.button(tr("Browse…")).clicked()
+            && let Some(picked) = rfd::FileDialog::new().set_title(title).pick_file()
+        {
+            *file = picked.to_string_lossy().into_owned();
+        }
+    });
 }
 
 fn password_field(ui: &mut Ui, value: &mut String) -> egui::Response {
@@ -1070,6 +1135,7 @@ mod tests {
             d.tab = Tab::Ssh;
             d.test = (1, TestState::Done(Ok(Some("PostgreSQL 17.2 · through SSH deploy@bastion.example.com".into()))));
         });
+        tunneled[0].tls = tls::TlsSettings { mode: TlsMode::VerifyFull, ca_file: "~/certs/rds-ca.pem".into(), ..Default::default() };
         render("postgres_ssh_light", false, ConnectionDialog::edit(1, &tunneled), |d| d.tab = Tab::Ssh);
     }
 
