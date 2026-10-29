@@ -244,6 +244,8 @@ struct Persisted {
     zoom: f32,
     /// Interface language (`None` = the system one).
     lang: Option<Lang>,
+    render_mode: crate::ui::performance::RenderMode,
+    show_frame_stats: bool,
 }
 
 impl Default for Persisted {
@@ -263,6 +265,8 @@ impl Default for Persisted {
             show_results: true,
             zoom: 1.0,
             lang: None,
+            render_mode: Default::default(),
+            show_frame_stats: false,
         }
     }
 }
@@ -326,6 +330,8 @@ pub struct DataCraftApp {
     demo_window: Option<egui::Vec2>,
     /// Language chosen by the user (`None` = follow the system).
     lang: Option<Lang>,
+    /// Low-power rendering for software adapters and Remote Desktop.
+    perf: crate::ui::performance::Performance,
 }
 
 impl DataCraftApp {
@@ -399,6 +405,7 @@ impl DataCraftApp {
             demo_explorer_w: None,
             demo_window: None,
             lang: persisted.lang,
+            perf: crate::ui::performance::Performance::new(cc.wgpu_render_state.as_ref(), persisted.render_mode, persisted.show_frame_stats),
         };
         app.restore_tabs(persisted.consoles, persisted.active);
         if let Some(path) = demo {
@@ -406,6 +413,7 @@ impl DataCraftApp {
         }
         theme::apply(&cc.egui_ctx, app.dark);
         app.applied_dark = Some(app.dark);
+        app.perf.apply_style(&cc.egui_ctx);
         // Keyboard zoom is handled by the app (⌘= / ⌘- / ⌘0) so it is not applied twice.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         cc.egui_ctx.set_zoom_factor(app.zoom);
@@ -3407,6 +3415,8 @@ impl DataCraftApp {
                     ui.label(tr("Max rows per query:"));
                     ui.add(egui::DragValue::new(&mut self.max_rows).range(1..=1_000_000).speed(10));
                 });
+                ui.separator();
+                self.perf.settings_ui(ui);
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| theme::primary_button(ui, tr("Close")).clicked())
                     .inner
@@ -3797,6 +3807,7 @@ fn apply_execution(
 
 impl eframe::App for DataCraftApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.perf.begin_frame();
         // First of all: the menu's edit commands are injected as events of this frame.
         self.menu_commands(ctx);
         self.handle_responses();
@@ -3804,13 +3815,21 @@ impl eframe::App for DataCraftApp {
             ctx.set_zoom_factor(self.zoom);
             self.applied_zoom = Some(self.zoom);
         }
-        if self.applied_dark != Some(self.dark) {
+        let theme_changed = self.applied_dark != Some(self.dark);
+        if theme_changed {
             theme::apply(ctx, self.dark);
             self.applied_dark = Some(self.dark);
         }
+        if self.perf.needs_style(theme_changed) {
+            self.perf.apply_style(ctx);
+        }
     }
 
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.perf.instant_wheel(ctx, raw_input);
+    }
+
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if let Some(size) = self.demo_window.take() {
             ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(vec2(400.0, 300.0)));
@@ -3869,6 +3888,7 @@ impl eframe::App for DataCraftApp {
             .show(ui, |ui| self.central(ui));
         self.dialogs(&ctx);
         if cfg!(target_os = "windows") { crate::ui::window_chrome::resize_edges(&ctx); }
+        self.perf.stats_overlay(&ctx, frame.info().cpu_usage);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -3898,6 +3918,8 @@ impl eframe::App for DataCraftApp {
             show_results: self.show_results,
             zoom: self.zoom,
             lang: self.lang,
+            render_mode: self.perf.mode,
+            show_frame_stats: self.perf.show_stats,
         };
         eframe::set_value(storage, STORAGE_KEY, &state);
     }
@@ -3924,6 +3946,7 @@ mod tests {
             max_rows: 1000, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
             zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None,
             demo_explorer_w: None, demo_window: None, lang: None,
+            perf: crate::ui::performance::Performance::new(None, Default::default(), false),
             modify: None,
         }
     }
