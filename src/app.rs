@@ -901,8 +901,9 @@ impl DataCraftApp {
             let target = match (c.conn, &c.table) {
                 (None, _) => Err(tr("No connection").to_string()),
                 _ if read_only => Err(tr("Read-only connection").to_string()),
-                // Points are written with line protocol, which the data editor doesn't produce.
-                _ if driver == Some(Driver::InfluxDb) => Err(tr("Editing is not available for this engine").to_string()),
+                // Points are written with line protocol, which the data editor doesn't produce, and
+                // Kusto ingests rows rather than editing them.
+                _ if matches!(driver, Some(Driver::InfluxDb | Driver::Kusto)) => Err(tr("Editing is not available for this engine").to_string()),
                 // Redis and MongoDB: only a key group or a collection opened in the data editor.
                 (Some(_), None) if nosql => Err(tr("Only data opened from the explorer can be edited on this engine").to_string()),
                 (Some(conn), Some(t)) => match self.table_info(conn, c.db.as_deref(), &t.schema, &t.table) {
@@ -1433,8 +1434,8 @@ impl DataCraftApp {
                 | ExplorerAction::EditView(t) => Some(t.conn),
                 _ => None,
             };
-            // Copying works with MongoDB collections too, but not with Redis keys nor InfluxDB
-            // measurements.
+            // Copying works with MongoDB collections too, but not with Redis keys, InfluxDB
+            // measurements nor Kusto tables.
             let not_copyable = match &a {
                 ExplorerAction::CopyTable(t) => self.conn(t.conn).is_some_and(|c| !c.cfg.driver.can_copy()),
                 _ => false,
@@ -3397,7 +3398,7 @@ impl DataCraftApp {
                     ui.label(RichText::new("DataCraft").font(theme::bold(17.0)));
                     ui.label(RichText::new(trf("Version {version}", &[("version", &env!("CARGO_PKG_VERSION"))])).color(p.muted));
                     ui.add_space(8.0);
-                    ui.label(tr("Lightweight database client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, SQLite, Snowflake, ClickHouse, Redis, MongoDB and InfluxDB."));
+                    ui.label(tr("Lightweight database client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, SQLite, Snowflake, ClickHouse, Redis, MongoDB, InfluxDB and Kusto."));
                     ui.label(RichText::new("macOS · Windows · Linux").small().color(p.muted));
                     ui.label(RichText::new(tr("Made with Rust, egui and tokio")).small().color(p.muted));
                     ui.add_space(14.0);
@@ -3580,13 +3581,14 @@ fn demo_server_config(id: u64, url: &str) -> Option<ConnectionConfig> {
     Some(cfg)
 }
 
-/// true if a statement only reads, in the engine's own language (SQL, Redis, `mongosh`, Flux or
-/// InfluxQL).
+/// true if a statement only reads, in the engine's own language (SQL, Redis, `mongosh`, Flux,
+/// InfluxQL or KQL).
 fn is_read_statement(driver: Driver, statement: &str) -> bool {
     match driver {
         Driver::Redis => crate::db::redis_db::is_read_command(statement),
         Driver::MongoDb => crate::db::mongo::is_read_command(statement),
         Driver::InfluxDb => crate::db::influx::is_read_command(statement),
+        Driver::Kusto => crate::db::kusto::is_read_command(statement),
         _ => is_query(statement),
     }
 }
@@ -3642,6 +3644,8 @@ pub fn table_query(driver: Driver, schema: &str, table: &str, where_clause: &str
         }
         // The filter row holds a Flux predicate on `r` and the time range.
         Driver::InfluxDb => return crate::db::influx::table_query(schema, table, w, o, max_rows),
+        // A KQL predicate and sort (`State == "TEXAS"`, `StartTime desc`).
+        Driver::Kusto => return crate::db::kusto::table_query(table, w, o, max_rows),
         _ => {}
     }
     let t = Session::quote_table(driver, schema, table);

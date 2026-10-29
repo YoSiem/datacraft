@@ -488,8 +488,8 @@ impl CopyDialog {
     }
 }
 
-/// Connections that can receive a copy: connected, not read-only and not Redis or InfluxDB
-/// (no tables or collections to copy into).
+/// Connections that can receive a copy: connected, not read-only and not Redis, InfluxDB or
+/// Kusto (no tables or collections to copy into, or rows are ingested rather than inserted).
 fn writable(c: &ConnState) -> bool {
     c.status == ConnStatus::Connected && !c.cfg.read_only && c.cfg.driver.can_copy()
 }

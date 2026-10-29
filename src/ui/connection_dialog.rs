@@ -121,6 +121,10 @@ impl ConnectionDialog {
         }
         let old_def = ConnectionConfig::new(cfg.id, old);
         let new_def = ConnectionConfig::new(cfg.id, new);
+        // Kusto starts without a host (a cluster address, not localhost).
+        if cfg.host == old_def.host {
+            cfg.host = new_def.host;
+        }
         if cfg.port == old_def.port {
             cfg.port = new_def.port;
         }
@@ -133,9 +137,16 @@ impl ConnectionDialog {
         if cfg.name == old_def.name || cfg.name == old.label() {
             cfg.name = new.label().to_string();
         }
-        // Authenticator is Snowflake's only; InfluxDB always takes a token.
-        if (new != Driver::Snowflake && cfg.auth == AuthMode::Authenticator) || new == Driver::InfluxDb {
+        // Authenticator is Snowflake's only, the Azure CLI Kusto's only; InfluxDB always takes a
+        // token, and Kusto starts with the Azure CLI's account.
+        if (new != Driver::Snowflake && cfg.auth == AuthMode::Authenticator)
+            || (new != Driver::Kusto && cfg.auth == AuthMode::AzureCli)
+            || new == Driver::InfluxDb
+        {
             cfg.auth = AuthMode::UserPassword;
+        }
+        if new == Driver::Kusto && cfg.auth == AuthMode::UserPassword && cfg.user.trim().is_empty() {
+            cfg.auth = AuthMode::AzureCli;
         }
         cfg.driver = new;
     }
@@ -424,7 +435,11 @@ impl ConnectionDialog {
                     ui.label(tr("Host:"));
                     ui.horizontal(|ui| {
                         let host_w = (ui.available_width() - 190.0).max(160.0);
-                        let hint = if item.cfg.driver == Driver::Snowflake { "<account>.snowflakecomputing.com" } else { "localhost" };
+                        let hint = match item.cfg.driver {
+                            Driver::Snowflake => "<account>.snowflakecomputing.com",
+                            Driver::Kusto => "<cluster>.<region>.kusto.windows.net",
+                            _ => "localhost",
+                        };
                         ui.add(egui::TextEdit::singleline(&mut item.cfg.host).hint_text(hint).margin(egui::vec2(8.0, 5.0)).desired_width(host_w));
                         ui.add_space(14.0);
                         ui.label(tr("Port:"));
@@ -482,12 +497,17 @@ impl ConnectionDialog {
         }
         // Redis / Valkey over TLS (`rediss://`); MongoDB takes `?tls=true` in its URL. ClickHouse
         // has its own secure port, followed when it was on the default one; InfluxDB serves
-        // HTTPS on the same port.
-        if matches!(cfg.driver, Driver::Redis | Driver::ClickHouse | Driver::InfluxDb) {
+        // HTTPS on the same port. Kusto is HTTPS unless turned off (the emulator serves HTTP).
+        if matches!(cfg.driver, Driver::Redis | Driver::ClickHouse | Driver::InfluxDb | Driver::Kusto) {
             ui.add_space(6.0);
-            let mut tls = cfg.property("tls").is_some_and(|v| v.eq_ignore_ascii_case("true"));
+            let kusto = cfg.driver == Driver::Kusto;
+            let mut tls = cfg.property("tls").map_or(kusto, |v| v.eq_ignore_ascii_case("true"));
             if ui.checkbox(&mut tls, tr("Use TLS")).changed() {
-                cfg.set_property("tls", if tls { "true" } else { "" });
+                cfg.set_property("tls", match (tls, kusto) {
+                    (true, false) => "true",
+                    (false, true) => "false",
+                    _ => "",
+                });
                 if cfg.driver == Driver::ClickHouse {
                     let (plain, secure) = (Driver::ClickHouse.default_port(), crate::db::clickhouse::TLS_PORT);
                     match (tls, cfg.port) {
@@ -697,16 +717,21 @@ fn segmented<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: [(T, &str
 /// Authentication and the fields it shows: User & Password, Authenticator (Snowflake) or No auth.
 fn auth_rows(ui: &mut Ui, cfg: &mut ConnectionConfig) {
     let influx = cfg.driver == Driver::InfluxDb;
+    let kusto = cfg.driver == Driver::Kusto;
     let label = |m: AuthMode| match m {
         AuthMode::UserPassword if influx => tr("Token"),
+        AuthMode::UserPassword if kusto => tr("Application (client secret)"),
         AuthMode::UserPassword => tr("User & Password"),
         AuthMode::Authenticator => tr("Authenticator"),
         AuthMode::NoAuth => tr("No auth"),
+        AuthMode::AzureCli => tr("Azure CLI"),
     };
     let modes: &[AuthMode] = if cfg.driver == Driver::Snowflake {
         &[AuthMode::UserPassword, AuthMode::Authenticator, AuthMode::NoAuth]
     } else if influx {
         &[AuthMode::UserPassword]
+    } else if kusto {
+        &[AuthMode::AzureCli, AuthMode::UserPassword, AuthMode::NoAuth]
     } else {
         &[AuthMode::UserPassword, AuthMode::NoAuth]
     };
@@ -723,13 +748,24 @@ fn auth_rows(ui: &mut Ui, cfg: &mut ConnectionConfig) {
         text_field(ui, &mut cfg.authenticator, "");
         ui.end_row();
     }
-    if cfg.auth != AuthMode::NoAuth {
-        // InfluxDB: the organization (empty: the token's only one) and the API token.
-        ui.label(if influx { tr("Organization:") } else { tr("User:") });
+    // Kusto: the Entra ID tenant (empty: the Azure CLI's own).
+    if kusto && cfg.auth != AuthMode::NoAuth {
+        ui.label(tr("Tenant:"));
+        let mut tenant = cfg.property("tenant").unwrap_or_default().to_string();
+        let hint = if cfg.auth == AuthMode::AzureCli { tr("<default>") } else { "<tenant>.onmicrosoft.com" };
+        if text_field(ui, &mut tenant, hint).changed() {
+            cfg.set_property("tenant", tenant.trim());
+        }
+        ui.end_row();
+    }
+    if !matches!(cfg.auth, AuthMode::NoAuth | AuthMode::AzureCli) {
+        // InfluxDB: the organization (empty: the token's only one) and the API token. Kusto: an
+        // Entra ID application's client ID and secret.
+        ui.label(if influx { tr("Organization:") } else if kusto { tr("Client ID:") } else { tr("User:") });
         text_field(ui, &mut cfg.user, "");
         ui.end_row();
 
-        ui.label(if influx { tr("Token:") } else { tr("Password:") });
+        ui.label(if influx { tr("Token:") } else if kusto { tr("Client secret:") } else { tr("Password:") });
         let hint = if cfg.password.is_empty() { tr("<empty>") } else { "" };
         ui.add(egui::TextEdit::singleline(&mut cfg.password).password(true).hint_text(hint).margin(egui::vec2(8.0, 5.0)).desired_width(f32::INFINITY));
         ui.end_row();
@@ -799,6 +835,21 @@ mod tests {
 
     use super::*;
     use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn switching_to_kusto_and_back() {
+        let mut cfg = ConnectionConfig::new(1, Driver::Postgres);
+        ConnectionDialog::change_driver(&mut cfg, Driver::Kusto);
+        // A cluster address and the Azure CLI's account, not localhost and postgres.
+        assert_eq!((cfg.host.as_str(), cfg.port, cfg.user.as_str(), cfg.auth), ("", 443, "", AuthMode::AzureCli));
+        ConnectionDialog::change_driver(&mut cfg, Driver::MySql);
+        assert_eq!((cfg.host.as_str(), cfg.port, cfg.user.as_str(), cfg.auth), ("localhost", 3306, "root", AuthMode::UserPassword));
+        // What was typed stays.
+        cfg.host = "db.internal".into();
+        cfg.user = "app".into();
+        ConnectionDialog::change_driver(&mut cfg, Driver::Kusto);
+        assert_eq!((cfg.host.as_str(), cfg.user.as_str(), cfg.auth), ("db.internal", "app", AuthMode::UserPassword));
+    }
 
     fn snowflake_source() -> ConnectionConfig {
         let mut cfg = ConnectionConfig::new(3, Driver::Snowflake);

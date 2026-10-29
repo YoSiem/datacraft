@@ -24,6 +24,8 @@ pub fn jdbc_url(cfg: &ConnectionConfig) -> String {
         Driver::MongoDb => format!("mongodb://{authority}{slash_db}{extra}"),
         Driver::ClickHouse => format!("clickhouse://{authority}{slash_db}{extra}"),
         Driver::InfluxDb => format!("influxdb://{authority}{slash_db}{extra}"),
+        // The cluster URI, as Kusto's own tools take it.
+        Driver::Kusto => format!("{}{slash_db}{extra}", super::kusto::cluster_url(cfg)),
     }
 }
 
@@ -61,6 +63,21 @@ pub fn apply_jdbc_url(cfg: &mut ConnectionConfig, url: &str) -> bool {
                 }
             }
             "influxdb://"
+        }
+        Driver::Kusto => {
+            // `https://help.kusto.windows.net/Samples`; `http://` (the emulator) turns TLS off.
+            for (scheme, tls, default_port) in [("https://", true, 443), ("http://", false, 80)] {
+                if url.len() >= scheme.len() && url[..scheme.len()].eq_ignore_ascii_case(scheme) {
+                    let rest = &url[scheme.len()..];
+                    let (main, extra) = rest.split_at(rest.find('?').unwrap_or(rest.len()));
+                    let (authority, db) = main.split_once('/').unwrap_or((main, ""));
+                    let Some((host, port)) = parse_authority(authority, default_port) else { return false };
+                    (cfg.host, cfg.port, cfg.database, cfg.url_extra) = (host, port, db.trim_end_matches('/').to_string(), extra.to_string());
+                    cfg.set_property("tls", if tls { "" } else { "false" });
+                    return true;
+                }
+            }
+            return false;
         }
     };
     let Some(rest) = url.strip_prefix(prefix) else { return false };

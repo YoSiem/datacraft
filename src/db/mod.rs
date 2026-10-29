@@ -9,6 +9,7 @@ pub mod create_db;
 pub mod backup;
 pub mod clickhouse;
 pub mod influx;
+pub mod kusto;
 pub mod mongo;
 pub mod mssql;
 pub mod object_info;
@@ -42,10 +43,12 @@ pub enum Driver {
     MongoDb,
     /// InfluxDB 2 (HTTP API: Flux, and InfluxQL through the v1 compatibility endpoint).
     InfluxDb,
+    /// Kusto: Azure Data Explorer, Fabric Eventhouses and the Kusto emulator (REST API, KQL).
+    Kusto,
 }
 
 impl Driver {
-    pub const ALL: [Driver; 11] = [
+    pub const ALL: [Driver; 12] = [
         Driver::Postgres,
         Driver::MySql,
         Driver::MariaDb,
@@ -57,18 +60,20 @@ impl Driver {
         Driver::MongoDb,
         Driver::Redis,
         Driver::InfluxDb,
+        Driver::Kusto,
     ];
 
-    /// Redis, MongoDB and InfluxDB: no SQL. Their consoles take the engine's own commands, the
-    /// grid is read-only and the SQL tools (DDL, import, copy, schema search…) are not offered.
+    /// Redis, MongoDB, InfluxDB and Kusto: no SQL. Their consoles take the engine's own
+    /// language, the grid is read-only and the SQL tools (DDL, import, copy, schema search…) are
+    /// not offered.
     pub fn is_nosql(self) -> bool {
-        matches!(self, Driver::Redis | Driver::MongoDb | Driver::InfluxDb)
+        matches!(self, Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto)
     }
 
-    /// Engines whose tables can be copied from and into (Copy Table To…): not Redis keys, nor
-    /// InfluxDB measurements.
+    /// Engines whose tables can be copied from and into (Copy Table To…): not Redis keys,
+    /// InfluxDB measurements nor Kusto tables.
     pub fn can_copy(self) -> bool {
-        !matches!(self, Driver::Redis | Driver::InfluxDb)
+        !matches!(self, Driver::Redis | Driver::InfluxDb | Driver::Kusto)
     }
 
     pub fn label(self) -> &'static str {
@@ -84,6 +89,7 @@ impl Driver {
             Driver::Redis => "Redis / Valkey",
             Driver::MongoDb => "MongoDB",
             Driver::InfluxDb => "InfluxDB",
+            Driver::Kusto => "Kusto / Azure Data Explorer",
         }
     }
 
@@ -98,6 +104,7 @@ impl Driver {
             Driver::Redis => 6379,
             Driver::MongoDb => 27017,
             Driver::InfluxDb => 8086,
+            Driver::Kusto => 443,
             Driver::Sqlite => 0,
         }
     }
@@ -105,7 +112,7 @@ impl Driver {
     /// Engines where each database has a single schema with its own name (SQLite: "main"),
     /// shown flattened in the explorer.
     pub fn flat_schema(self) -> bool {
-        matches!(self, Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::ClickHouse | Driver::Redis | Driver::MongoDb | Driver::InfluxDb)
+        matches!(self, Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::ClickHouse | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto)
     }
 
     /// Engines whose server has several databases that can be created and dropped from the app.
@@ -123,6 +130,8 @@ impl Driver {
             Driver::ClickHouse => format!("`{}`", name.replace('\\', "\\\\").replace('`', "\\`")),
             // InfluxQL identifiers and Flux strings: double quotes, backslash escapes.
             Driver::InfluxDb => format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\"")),
+            // Kusto: `['name']`, with the escapes of a KQL string.
+            Driver::Kusto => format!("['{}']", name.replace('\\', "\\\\").replace('\'', "\\'")),
             Driver::Postgres | Driver::Sqlite | Driver::Oracle | Driver::Snowflake | Driver::Redis | Driver::MongoDb => {
                 format!("\"{}\"", name.replace('"', "\"\""))
             }
@@ -189,6 +198,8 @@ pub enum AuthMode {
     Authenticator,
     /// Neither user nor password: everything comes from the driver properties.
     NoAuth,
+    /// The Azure CLI's signed-in account (`az login`), for Kusto.
+    AzureCli,
 }
 
 impl Default for ConnectionConfig {
@@ -203,7 +214,8 @@ impl ConnectionConfig {
             id,
             name: format!("{} {}", driver.label(), id),
             driver,
-            host: "localhost".into(),
+            // Kusto: the cluster, typed (`<cluster>.<region>.kusto.windows.net`).
+            host: if driver == Driver::Kusto { String::new() } else { "localhost".into() },
             port: driver.default_port(),
             database: match driver {
                 Driver::Postgres => "postgres".into(),
@@ -213,8 +225,8 @@ impl ConnectionConfig {
                 Driver::MongoDb => "test".into(),
                 Driver::Redis => "0".into(),
                 Driver::ClickHouse => "default".into(),
-                // InfluxDB: the bucket; empty = the first one.
-                Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::Snowflake | Driver::InfluxDb => String::new(),
+                // InfluxDB: the bucket; Kusto: the database. Empty = the first one.
+                Driver::Sqlite | Driver::MySql | Driver::MariaDb | Driver::Snowflake | Driver::InfluxDb | Driver::Kusto => String::new(),
             },
             user: match driver {
                 Driver::Postgres => "postgres".into(),
@@ -222,8 +234,9 @@ impl ConnectionConfig {
                 Driver::MySql | Driver::MariaDb => "root".into(),
                 Driver::Oracle => "system".into(),
                 Driver::ClickHouse => "default".into(),
-                // InfluxDB: the organization; empty = the token's only one.
-                Driver::Sqlite | Driver::Snowflake | Driver::Redis | Driver::MongoDb | Driver::InfluxDb => String::new(),
+                // InfluxDB: the organization; empty = the token's only one. Kusto: an
+                // application's client ID.
+                Driver::Sqlite | Driver::Snowflake | Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => String::new(),
             },
             password: String::new(),
             file_path: String::new(),
@@ -232,7 +245,8 @@ impl ConnectionConfig {
             warehouse: String::new(),
             role: String::new(),
             schema: String::new(),
-            auth: AuthMode::default(),
+            // Kusto signs in with the Azure CLI's account unless told otherwise.
+            auth: if driver == Driver::Kusto { AuthMode::AzureCli } else { AuthMode::default() },
             authenticator: String::new(),
             properties: Vec::new(),
             url_only: false,
@@ -402,6 +416,7 @@ pub enum Session {
     Redis(Box<redis_db::RedisSession>),
     MongoDb(Box<mongo::MongoSession>),
     InfluxDb(Box<influx::InfluxSession>),
+    Kusto(Box<kusto::KustoSession>),
 }
 
 impl Session {
@@ -442,6 +457,7 @@ impl Session {
             Driver::Redis => Session::Redis(Box::new(redis_db::RedisSession::connect(cfg).await?)),
             Driver::MongoDb => Session::MongoDb(Box::new(mongo::MongoSession::connect(cfg).await?)),
             Driver::InfluxDb => Session::InfluxDb(Box::new(influx::InfluxSession::connect(cfg).await?)),
+            Driver::Kusto => Session::Kusto(Box::new(kusto::KustoSession::connect(cfg).await?)),
         })
     }
 
@@ -459,6 +475,7 @@ impl Session {
             Session::Redis(s) => s.execute(sql, max_rows).await,
             Session::MongoDb(s) => s.execute(sql, max_rows).await,
             Session::InfluxDb(s) => s.execute(sql, max_rows).await,
+            Session::Kusto(s) => s.execute(sql, max_rows).await,
         }
     }
 
@@ -475,6 +492,7 @@ impl Session {
             Session::Redis(s) => s.current_database().await,
             Session::MongoDb(s) => s.current_database().await,
             Session::InfluxDb(s) => s.current_database().await,
+            Session::Kusto(s) => s.current_database().await,
         }
     }
 
@@ -491,6 +509,7 @@ impl Session {
             Session::Redis(s) => s.list_databases().await,
             Session::MongoDb(s) => s.list_databases().await,
             Session::InfluxDb(s) => s.list_databases().await,
+            Session::Kusto(s) => s.list_databases().await,
         }
     }
 
@@ -510,6 +529,7 @@ impl Session {
             Session::Redis(s) if !db.is_empty() => s.use_database(db).await,
             Session::MongoDb(s) if !db.is_empty() => s.use_database(db).await,
             Session::InfluxDb(s) if !db.is_empty() => s.use_database(db).await,
+            Session::Kusto(s) if !db.is_empty() => s.use_database(db).await,
             _ => Ok(()),
         }
     }
@@ -531,8 +551,9 @@ impl Session {
             // Their commands (not SQL) come from `redis_db::change_commands` / `mongo::change_command`.
             Session::Redis(s) => s.apply_changes(statements).await,
             Session::MongoDb(s) => s.apply_changes(statements).await,
-            // Points are written with line protocol, which the data editor doesn't produce.
-            Session::InfluxDb(_) => anyhow::bail!(crate::i18n::tr("Editing is not available for this engine")),
+            // Points are written with line protocol, which the data editor doesn't produce, and
+            // Kusto ingests rows rather than editing them.
+            Session::InfluxDb(_) | Session::Kusto(_) => anyhow::bail!(crate::i18n::tr("Editing is not available for this engine")),
         }
     }
 
@@ -555,7 +576,7 @@ impl Session {
     /// Runs the statements in ONE transaction (all or nothing), without the one-row rule of
     /// `apply_changes`. Returns the affected rows when the engine reports them.
     pub async fn run_transaction(&mut self, statements: &[String]) -> anyhow::Result<u64> {
-        if matches!(self, Session::Redis(_) | Session::MongoDb(_) | Session::InfluxDb(_)) {
+        if matches!(self, Session::Redis(_) | Session::MongoDb(_) | Session::InfluxDb(_) | Session::Kusto(_)) {
             anyhow::bail!(crate::i18n::tr("Editing is not available for this engine"));
         }
         if let Session::ClickHouse(s) = self {
@@ -601,7 +622,7 @@ impl Session {
             Session::ClickHouse(s) => s.is_closed(),
             Session::Redis(s) => s.is_closed(),
             Session::MongoDb(s) => s.is_closed(),
-            Session::InfluxDb(_) => false,
+            Session::InfluxDb(_) | Session::Kusto(_) => false,
         }
     }
 
@@ -618,6 +639,7 @@ impl Session {
             Session::Redis(s) => s.introspect().await,
             Session::MongoDb(s) => s.introspect().await,
             Session::InfluxDb(s) => s.introspect().await,
+            Session::Kusto(s) => s.introspect().await,
         }
     }
 
@@ -628,6 +650,7 @@ impl Session {
             Session::Redis(s) => return s.server_version().await,
             Session::MongoDb(s) => return s.server_version().await,
             Session::InfluxDb(s) => return s.server_version().await,
+            Session::Kusto(s) => return s.server_version().await,
             _ => {}
         }
         let sql = match driver {
@@ -638,7 +661,7 @@ impl Session {
             Driver::Sqlite => "SELECT sqlite_version()",
             Driver::Snowflake => "SELECT CURRENT_VERSION()",
             Driver::ClickHouse => "SELECT version()",
-            Driver::Redis | Driver::MongoDb | Driver::InfluxDb => return None,
+            Driver::Redis | Driver::MongoDb | Driver::InfluxDb | Driver::Kusto => return None,
         };
         let rs = self.execute(sql, 1).await.ok()?;
         let v = rs.into_iter().next()?.rows.into_iter().next()?.into_iter().next()??;
@@ -659,6 +682,8 @@ impl Session {
             Driver::Postgres | Driver::Snowflake => format!("\"{}\".\"{}\"", schema.replace('"', "\"\""), table.replace('"', "\"\"")),
             // No qualified names: a collection, a key pattern or a measurement, as is.
             Driver::Redis | Driver::MongoDb | Driver::InfluxDb => table.to_string(),
+            // Kusto: the table of the request's database.
+            Driver::Kusto => Driver::Kusto.quote_ident(table),
             Driver::Sqlite => format!("\"{}\"", table.replace('"', "\"\"")),
             Driver::MsSql => format!("[{}].[{}]", schema.replace(']', "]]"), table.replace(']', "]]")),
             // MySQL: the schema is the database.

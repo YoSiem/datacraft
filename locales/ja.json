@@ -85,7 +85,7 @@
     "Running again will discard the pending grid changes.": "再実行すると、グリッドの保留中の変更は破棄されます。",
     "Discard": "破棄",
     "Version {version}": "バージョン {version}",
-    "Lightweight database client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, SQLite, Snowflake, ClickHouse, Redis, MongoDB and InfluxDB.": "PostgreSQL、MySQL、MariaDB、SQL Server、Oracle、SQLite、Snowflake、ClickHouse、Redis、MongoDB、InfluxDB 用の軽量データベースクライアント。",
+    "Lightweight database client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, SQLite, Snowflake, ClickHouse, Redis, MongoDB, InfluxDB and Kusto.": "PostgreSQL、MySQL、MariaDB、SQL Server、Oracle、SQLite、Snowflake、ClickHouse、Redis、MongoDB、InfluxDB、Kusto 用の軽量データベースクライアント。",
     "Made with Rust, egui and tokio": "Rust、egui、tokio で作成",
     "Max rows per query:": "クエリあたりの最大行数:",
     "Show completions while typing": "入力中に補完候補を表示",
@@ -447,7 +447,14 @@
     "Organization:": "組織:",
     "Token": "トークン",
     "Token:": "トークン:",
-    "measurements": "メジャーメント"
+    "measurements": "メジャーメント",
+    "<default>": "<既定>",
+    "Application (client secret)": "アプリケーション (クライアント シークレット)",
+    "Azure CLI": "Azure CLI",
+    "Client ID:": "クライアント ID:",
+    "Client secret:": "クライアント シークレット:",
+    "Tenant:": "テナント:",
+    "Materialized views": "具体化されたビュー"
   },
   "core": {
     "The statement affected {n} rows (expected 1); nothing was saved:\n{stmt}": "ステートメントが {n} 行に影響しました (想定は 1 行)。何も保存されていません:\n{stmt}",
@@ -506,7 +513,20 @@
     "Organization is required": "組織は必須です",
     "There is no bucket to query": "クエリを実行するバケットがありません",
     "Unreadable response from InfluxDB: {error}": "InfluxDB からの応答を読み取れません: {error}",
-    "InfluxDB: {message}. InfluxQL needs a database/retention policy mapping for the bucket (created automatically since InfluxDB 2.4; before, with `influx v1 dbrp create`); Flux needs none.": "InfluxDB: {message}。InfluxQL にはバケットのデータベース/保持ポリシーのマッピングが必要です（InfluxDB 2.4 以降は自動で作成されます。それ以前は `influx v1 dbrp create` で作成します）。Flux には不要です。"
+    "InfluxDB: {message}. InfluxQL needs a database/retention policy mapping for the bucket (created automatically since InfluxDB 2.4; before, with `influx v1 dbrp create`); Flux needs none.": "InfluxDB: {message}。InfluxQL にはバケットのデータベース/保持ポリシーのマッピングが必要です（InfluxDB 2.4 以降は自動で作成されます。それ以前は `influx v1 dbrp create` で作成します）。Flux には不要です。",
+    "Signing in to Kusto needs HTTPS: turn on \"Use TLS\"": "Kusto へのサインインには HTTPS が必要です:「TLS を使用」をオンにしてください",
+    "Azure CLI: {message}": "Azure CLI: {message}",
+    "HTTP {status} from Kusto: {message}": "Kusto からの HTTP {status}: {message}",
+    "Kusto: {message}": "Kusto: {message}",
+    "Sign-in failed: no access token": "サインインに失敗しました: アクセス トークンがありません",
+    "Sign-in failed: {message}": "サインインに失敗しました: {message}",
+    "The Azure CLI (az) was not found: install it and run az login, or choose another authentication": "Azure CLI (az) が見つかりません。インストールして az login を実行するか、別の認証方法を選択してください",
+    "The application's client ID is required": "アプリケーションのクライアント ID が必要です",
+    "The application's client secret is required": "アプリケーションのクライアント シークレットが必要です",
+    "The query was cancelled": "クエリはキャンセルされました",
+    "The tenant is required to sign in as an application": "アプリケーションとしてサインインするにはテナントが必要です",
+    "Unreadable response from Kusto: {error}": "Kusto からの応答を読み取れません: {error}",
+    "Unreadable response from the Azure CLI: {error}": "Azure CLI からの応答を読み取れません: {error}"
   },
   "mysql": {
     "Error {code} (SQLSTATE {state}): {message}": "エラー {code} (SQLSTATE {state}): {message}"

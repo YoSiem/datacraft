@@ -33,6 +33,8 @@ pub fn literal(driver: Driver, value: &Cell) -> String {
                 // does the same inside '…' (its `"…"` stays an identifier).
                 Driver::MySql | Driver::MariaDb | Driver::Snowflake | Driver::ClickHouse => format!("'{}'", escaped.replace('\\', "\\\\")),
                 Driver::Postgres | Driver::Sqlite | Driver::Oracle | Driver::Redis | Driver::MongoDb | Driver::InfluxDb => format!("'{escaped}'"),
+                // KQL escapes both the quote and the backslash with a backslash.
+                Driver::Kusto => format!("'{}'", v.replace('\\', "\\\\").replace('\'', "\\'")),
             }
         }
     }
@@ -93,7 +95,7 @@ pub fn change_statements(
         match driver {
             Driver::Redis => out.extend(crate::db::redis_db::change_commands(ch, types)?),
             Driver::MongoDb => out.push(crate::db::mongo::change_command(table, ch, types)?),
-            Driver::InfluxDb => return Err(crate::i18n::tr("Editing is not available for this engine").into()),
+            Driver::InfluxDb | Driver::Kusto => return Err(crate::i18n::tr("Editing is not available for this engine").into()),
             _ => out.push(change_sql(driver, schema, table, ch)),
         }
     }

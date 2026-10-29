@@ -85,7 +85,7 @@
     "Running again will discard the pending grid changes.": "Executar novamente descartará as alterações pendentes da grade.",
     "Discard": "Descartar",
     "Version {version}": "Versão {version}",
-    "Lightweight database client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, SQLite, Snowflake, ClickHouse, Redis, MongoDB and InfluxDB.": "Cliente de banco de dados leve para PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, SQLite, Snowflake, ClickHouse, Redis, MongoDB e InfluxDB.",
+    "Lightweight database client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, SQLite, Snowflake, ClickHouse, Redis, MongoDB, InfluxDB and Kusto.": "Cliente de banco de dados leve para PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, SQLite, Snowflake, ClickHouse, Redis, MongoDB, InfluxDB e Kusto.",
     "Made with Rust, egui and tokio": "Feito com Rust, egui e tokio",
     "Max rows per query:": "Máx. linhas por consulta:",
     "Show completions while typing": "Mostrar sugestões ao digitar",
@@ -447,7 +447,14 @@
     "Organization:": "Organização:",
     "Token": "Token",
     "Token:": "Token:",
-    "measurements": "medições"
+    "measurements": "medições",
+    "<default>": "<padrão>",
+    "Application (client secret)": "Aplicativo (segredo do cliente)",
+    "Azure CLI": "CLI do Azure",
+    "Client ID:": "ID do cliente:",
+    "Client secret:": "Segredo do cliente:",
+    "Tenant:": "Locatário:",
+    "Materialized views": "Exibições materializadas"
   },
   "core": {
     "The statement affected {n} rows (expected 1); nothing was saved:\n{stmt}": "A instrução afetou {n} linhas (esperada 1); nada foi salvo:\n{stmt}",
@@ -506,7 +513,20 @@
     "Organization is required": "A organização é obrigatória",
     "There is no bucket to query": "Não há nenhum bucket para consultar",
     "Unreadable response from InfluxDB: {error}": "Resposta ilegível do InfluxDB: {error}",
-    "InfluxDB: {message}. InfluxQL needs a database/retention policy mapping for the bucket (created automatically since InfluxDB 2.4; before, with `influx v1 dbrp create`); Flux needs none.": "InfluxDB: {message}. O InfluxQL precisa de um mapeamento de banco de dados/política de retenção para o bucket (criado automaticamente desde o InfluxDB 2.4; antes, com `influx v1 dbrp create`); o Flux não precisa."
+    "InfluxDB: {message}. InfluxQL needs a database/retention policy mapping for the bucket (created automatically since InfluxDB 2.4; before, with `influx v1 dbrp create`); Flux needs none.": "InfluxDB: {message}. O InfluxQL precisa de um mapeamento de banco de dados/política de retenção para o bucket (criado automaticamente desde o InfluxDB 2.4; antes, com `influx v1 dbrp create`); o Flux não precisa.",
+    "Signing in to Kusto needs HTTPS: turn on \"Use TLS\"": "Entrar no Kusto requer HTTPS: ative \"Usar TLS\"",
+    "Azure CLI: {message}": "CLI do Azure: {message}",
+    "HTTP {status} from Kusto: {message}": "HTTP {status} do Kusto: {message}",
+    "Kusto: {message}": "Kusto: {message}",
+    "Sign-in failed: no access token": "Falha ao entrar: nenhum token de acesso",
+    "Sign-in failed: {message}": "Falha ao entrar: {message}",
+    "The Azure CLI (az) was not found: install it and run az login, or choose another authentication": "A CLI do Azure (az) não foi encontrada: instale-a e execute az login, ou escolha outra autenticação",
+    "The application's client ID is required": "O ID do cliente do aplicativo é obrigatório",
+    "The application's client secret is required": "O segredo do cliente do aplicativo é obrigatório",
+    "The query was cancelled": "A consulta foi cancelada",
+    "The tenant is required to sign in as an application": "O locatário é obrigatório para entrar como aplicativo",
+    "Unreadable response from Kusto: {error}": "Resposta ilegível do Kusto: {error}",
+    "Unreadable response from the Azure CLI: {error}": "Resposta ilegível da CLI do Azure: {error}"
   },
   "mysql": {
     "Error {code} (SQLSTATE {state}): {message}": "Erro {code} (SQLSTATE {state}): {message}"

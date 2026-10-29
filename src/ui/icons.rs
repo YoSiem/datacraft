@@ -401,5 +401,6 @@ pub fn driver_color(driver: Driver, p: &Palette) -> Color32 {
         Driver::Redis => Color32::from_rgb(0xD8, 0x2C, 0x20),
         Driver::MongoDb => Color32::from_rgb(0x13, 0xAA, 0x52),
         Driver::InfluxDb => Color32::from_rgb(0x9B, 0x2A, 0xFF),
+        Driver::Kusto => Color32::from_rgb(0x00, 0x78, 0xD4),
     }
 }

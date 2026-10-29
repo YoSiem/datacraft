@@ -535,7 +535,8 @@ impl Console {
     fn apply_cmd(&mut self, ctx: &egui::Context, cx: &ConsoleCtx<'_>, cmd: EditCmd, actions: &mut Vec<ConsoleAction>) {
         match cmd {
             EditCmd::Format => self.reformat(ctx, cx),
-            EditCmd::ToggleComment => self.edit_lines(ctx, toggle_line_comment),
+            // KQL's comments are `//`.
+            EditCmd::ToggleComment => self.edit_lines(ctx, if cx.driver == Driver::Kusto { toggle_slash_comment } else { toggle_line_comment }),
             EditCmd::Duplicate => self.edit_lines(ctx, duplicate_lines),
             EditCmd::DeleteLine => self.edit_lines(ctx, delete_lines),
             EditCmd::Explain => {
@@ -1271,9 +1272,13 @@ impl Console {
         let right = Rect::from_min_max(pos2(rect.left() + half, rect.top()), rect.max);
         ui.painter().vline(left.right(), rect.y_range().shrink(6.0), Stroke::new(1.0, p.grid));
         let mut submit = false;
-        // InfluxDB: a Flux predicate on `r` and the time range (see `influx::table_query`).
-        let (where_hint, order_hint) =
-            if driver == Driver::InfluxDb { ("r.host == \"web-1\"", "start: -1h") } else { ("WHERE", "ORDER BY") };
+        // InfluxDB: a Flux predicate on `r` and the time range (see `influx::table_query`). Kusto:
+        // a KQL predicate and sort, piped into `where` and `order by` (see `kusto::table_query`).
+        let (where_hint, order_hint) = match driver {
+            Driver::InfluxDb => ("r.host == \"web-1\"", "start: -1h"),
+            Driver::Kusto => ("| where", "| order by"),
+            _ => ("WHERE", "ORDER BY"),
+        };
         for (r, ico, hint, text, salt) in [
             (left, Ico::Filter, where_hint, &mut t.where_clause, "where"),
             (right, Ico::Sort, order_hint, &mut t.order_by, "order"),
@@ -1967,6 +1972,17 @@ fn line_start(chars: &[char], pos: usize) -> usize {
 /// every non-blank line is commented they are uncommented, otherwise `-- ` is added at the
 /// start of each one. Without a selection the caret moves to the next line.
 fn toggle_line_comment(text: &str, a: usize, b: usize) -> (String, usize, usize) {
+    toggle_comment(text, a, b, "-- ")
+}
+
+/// `toggle_line_comment` with `// ` (KQL).
+fn toggle_slash_comment(text: &str, a: usize, b: usize) -> (String, usize, usize) {
+    toggle_comment(text, a, b, "// ")
+}
+
+/// `marker`: the two comment characters and a space.
+fn toggle_comment(text: &str, a: usize, b: usize, marker: &'static str) -> (String, usize, usize) {
+    let mark: Vec<char> = marker.chars().collect();
     let chars: Vec<char> = text.chars().collect();
     let (a, b) = (a.min(b).min(chars.len()), a.max(b).min(chars.len()));
     let lines = touched_lines(&chars, a, b);
@@ -1977,7 +1993,7 @@ fn toggle_line_comment(text: &str, a: usize, b: usize) -> (String, usize, usize)
     }
     let commented = |&(s, e): &(usize, usize)| {
         let first = (s..e).find(|&i| !chars[i].is_whitespace());
-        first.is_some_and(|i| i + 1 < e && chars[i] == '-' && chars[i + 1] == '-')
+        first.is_some_and(|i| i + 1 < e && chars[i] == mark[0] && chars[i + 1] == mark[1])
     };
     let uncomment = targets.iter().filter(|l| content(l)).count() > 0 && targets.iter().all(commented);
     // Edits (position, removed chars, inserted text), ascending.
@@ -1989,7 +2005,7 @@ fn toggle_line_comment(text: &str, a: usize, b: usize) -> (String, usize, usize)
                 let del = if i + 2 < e && chars[i + 2] == ' ' { 3 } else { 2 };
                 (i, del, "")
             } else {
-                (s, 0, "-- ")
+                (s, 0, marker)
             }
         })
         .collect();
@@ -2741,6 +2757,11 @@ mod tests {
         // Empty text / blank line.
         assert_eq!(run(t, "|"), "-- |");
         assert_eq!(run(t, "a\n|\nb"), "a\n-- \nb|");
+        // KQL: `//`, and `--` is not a comment there.
+        let k = toggle_slash_comment;
+        assert_eq!(run(k, "[T\n  take 1]"), "[// T\n//   take 1]");
+        assert_eq!(run(k, "[// T\n  //take 1]"), "[T\n  take 1]");
+        assert_eq!(run(k, "-- x|"), "// -- x|");
     }
 
     #[test]

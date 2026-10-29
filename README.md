@@ -79,6 +79,8 @@ SQL consoles provide syntax highlighting, completion, formatting, find and repla
 
 Redis/Valkey and MongoDB consoles use their own commands, including <code>HGETALL user:1</code> and <code>db.orders.find({total: {$gte: 100}})</code>. Their result grids are read-only.
 
+The Kusto console takes KQL queries and control commands, such as <code>StormEvents | summarize count() by State</code> and <code>.show tables</code>; requests are separated by blank lines, and the result grids are read-only too.
+
 ## Edit data with clear feedback
 
 Navigate with arrow keys and Tab; the grid scrolls to keep the active cell visible. Extend selections with Shift, select a column by its name, paste clipboard matrices or fill selected cells with one value.
@@ -139,6 +141,7 @@ PostgreSQL, MySQL and MariaDB backups require their native dump utilities. SQLit
 | Redis / Valkey | Native commands, keys grouped by prefix, type/TTL information and read-only result grids |
 | MongoDB | <code>mongosh</code>-style commands, collection browsing and read-only result grids |
 | InfluxDB 2 | HTTP API (port 8086, HTTPS with "Use TLS") with an API token and an organization; Flux and InfluxQL consoles, buckets and measurements with their tags and fields, and read-only result grids filtered by a Flux predicate and a time range (the last hour by default). InfluxQL needs InfluxDB 2.4+ or a DBRP mapping |
+| Kusto / Azure Data Explorer | REST API over HTTPS, signed in with the Azure CLI's account (`az login`), an Entra ID application (client ID and secret), or no authentication for the Kusto emulator; KQL console with control commands (requests separated by blank lines, as in Kusto Explorer), databases with their tables and materialized views, and read-only result grids filtered and sorted with KQL. Read-only connections are also enforced by the server |
 
 Support varies by engine, server version and account privileges. [Oracle Instant Client](https://www.oracle.com/database/technologies/instant-client.html) must be installed separately for Oracle connections.
 
