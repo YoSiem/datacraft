@@ -246,6 +246,10 @@ struct Persisted {
     zoom: f32,
     /// Interface language (`None` = the system one).
     lang: Option<Lang>,
+    /// Look for a newer release on GitHub a little after launch.
+    check_updates: bool,
+    /// "Skip this version": no notice until a newer one.
+    skipped_version: Option<String>,
 }
 
 impl Default for Persisted {
@@ -266,6 +270,8 @@ impl Default for Persisted {
             show_results: true,
             zoom: 1.0,
             lang: None,
+            check_updates: true,
+            skipped_version: None,
         }
     }
 }
@@ -305,6 +311,12 @@ pub struct DataCraftApp {
     renaming: Option<(u64, String)>,
     show_about: bool,
     show_settings: bool,
+    check_updates: bool,
+    skipped_version: Option<String>,
+    /// The update check under way, and whether it was asked for ("Check for Updates…").
+    update_check: Option<(std::sync::mpsc::Receiver<Result<crate::update::Release, String>>, bool)>,
+    /// A newer release, shown in the corner until skipped or dismissed.
+    update: Option<crate::update::Release>,
     /// Native macOS menu bar (None if it could not be installed).
     native_menu: Option<crate::native_menu::NativeMenu>,
     show_explorer: bool,
@@ -388,6 +400,10 @@ impl DataCraftApp {
             renaming: None,
             show_about: false,
             show_settings: false,
+            check_updates: persisted.check_updates,
+            skipped_version: persisted.skipped_version,
+            update_check: None,
+            update: None,
             native_menu: crate::native_menu::NativeMenu::install(&cc.egui_ctx),
             show_explorer: persisted.show_explorer,
             show_results: persisted.show_results,
@@ -409,6 +425,9 @@ impl DataCraftApp {
             lang: persisted.lang,
         };
         app.restore_tabs(persisted.consoles, persisted.active);
+        if app.check_updates && demo.is_none() {
+            app.update_check = Some((crate::update::check(cc.egui_ctx.clone(), std::time::Duration::from_secs(5)), false));
+        }
         if let Some(path) = demo {
             app.start_demo(&path);
         }
@@ -2399,6 +2418,7 @@ impl DataCraftApp {
             let modal = self.modal_open();
             match cmd {
                 M::About => self.show_about = true,
+                M::CheckUpdates => self.check_for_updates(ctx),
                 M::Settings => self.show_settings = true,
                 M::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
                 M::NewConnection if !modal => self.open_new_connection_dialog(),
@@ -2480,6 +2500,10 @@ impl DataCraftApp {
         });
         ui.menu_button(tr("View"), |ui| self.view_menu(ui));
         ui.menu_button(tr("Help"), |ui| {
+            if ui.button(tr("Check for Updates…")).clicked() {
+                self.check_for_updates(ui.ctx());
+                ui.close();
+            }
             if ui.button(tr("About DataCraft")).clicked() {
                 self.show_about = true;
                 ui.close();
@@ -3204,6 +3228,7 @@ impl DataCraftApp {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
+        self.update_notice(ctx);
         if let Some(dialog) = self.backup.as_mut() {
             match dialog.show(ctx, &self.explorer.backups) {
                 Some(crate::ui::backup_dialog::BackupAction::Start(request)) => self.worker.send(Request::Backup { conn: dialog.conn, id: dialog.id, request: Box::new(request), cancel: dialog.cancel.clone() }),
@@ -3476,6 +3501,7 @@ impl DataCraftApp {
                     ui.add(egui::DragValue::new(&mut self.max_rows).range(1..=1_000_000).speed(10));
                 });
                 ui.checkbox(&mut self.auto_complete, tr("Show completions while typing"));
+                ui.checkbox(&mut self.check_updates, tr("Check for updates at startup"));
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| theme::primary_button(ui, tr("Close")).clicked())
                     .inner
@@ -3488,6 +3514,70 @@ impl DataCraftApp {
 }
 
 impl DataCraftApp {
+    /// "Check for Updates…": the result is shown even for a skipped version, and when up to date.
+    fn check_for_updates(&mut self, ctx: &egui::Context) {
+        self.info(tr("Checking for updates…"));
+        self.update_check = Some((crate::update::check(ctx.clone(), std::time::Duration::ZERO), true));
+    }
+
+    /// The update check's result, and the notice of a newer release in the bottom-right corner.
+    fn update_notice(&mut self, ctx: &egui::Context) {
+        if let Some((rx, asked)) = &self.update_check
+            && let Ok(result) = rx.try_recv()
+        {
+            let asked = *asked;
+            self.update_check = None;
+            match result {
+                Ok(r) if crate::update::is_newer(&r.version) => {
+                    if asked || self.skipped_version.as_deref() != Some(r.version.as_str()) {
+                        self.update = Some(r);
+                    }
+                    if asked {
+                        self.status_msg = None;
+                    }
+                }
+                Ok(_) if asked => self.info(trf("DataCraft {version} is up to date", &[("version", &env!("CARGO_PKG_VERSION"))])),
+                Err(e) if asked => self.error(trf("Could not check for updates: {error}", &[("error", &e)])),
+                _ => {}
+            }
+        }
+        // Not over a dialog: it comes back when the dialog closes.
+        let Some(release) = self.update.clone().filter(|_| !self.modal_open()) else { return };
+        let p = palette(self.dark);
+        let mut close = false;
+        egui::Area::new(egui::Id::new("update_notice")).anchor(egui::Align2::RIGHT_BOTTOM, vec2(-16.0, -40.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).fill(p.popup_bg).corner_radius(10).inner_margin(Margin::same(14)).stroke(egui::Stroke::new(1.0, p.popup_border)).show(ui, |ui| {
+                ui.set_width(300.0);
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::hover());
+                    crate::ui::branding::paint(ui, r);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(trf("DataCraft {version} is available", &[("version", &release.version)])).strong());
+                        ui.label(RichText::new(trf("You have {version}. Download it from the release page.", &[("version", &env!("CARGO_PKG_VERSION"))])).size(12.0).color(p.muted));
+                    });
+                });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if theme::primary_button(ui, tr("View Release")).clicked() {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(&release.url));
+                        close = true;
+                    }
+                    if theme::secondary_button(ui, tr("Skip This Version")).clicked() {
+                        self.skipped_version = Some(release.version.clone());
+                        close = true;
+                    }
+                    if theme::secondary_button(ui, tr("Later")).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        });
+        if close {
+            self.update = None;
+        }
+    }
+
     /// "Preview pending changes" modal window.
     fn preview_dialog(&mut self, ctx: &egui::Context, frame: egui::Frame) {
         let Some(pv) = self.preview.as_ref().filter(|p| p.visible) else { return };
@@ -3975,6 +4065,8 @@ impl eframe::App for DataCraftApp {
             show_results: self.show_results,
             zoom: self.zoom,
             lang: self.lang,
+            check_updates: self.check_updates,
+            skipped_version: self.skipped_version.clone(),
         };
         eframe::set_value(storage, STORAGE_KEY, &state);
     }
@@ -3996,7 +4088,7 @@ mod tests {
             explorer: ExplorerState::default(), backup: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(),
             save_on_row_change: false,
             dialog: None, confirm_delete: None, ask_password: None, create: None, drop: None, views: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
-            show_about: false, show_settings: false, native_menu: None, show_explorer: true,
+            show_about: false, show_settings: false, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
             zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None,
@@ -4136,6 +4228,29 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/navigation-snapshots");
         std::fs::create_dir_all(&dir).unwrap();
         h.render().unwrap().save(dir.join("tab-menu.png")).unwrap();
+    }
+
+    #[test]
+    #[ignore = "Requires a GPU; renders the notice of a newer release"]
+    fn render_update_notice() {
+        use egui_kittest::kittest::Queryable;
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/branding-snapshots");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = tabs_app();
+        app.update = Some(crate::update::Release { version: "9.0.0".into(), url: "https://github.com/javy-fernandez/datacraft/releases/tag/v9.0.0".into() });
+        let mut first = true;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(900.0, 620.0)).build_ui_state(move |ui, app: &mut DataCraftApp| {
+            if std::mem::take(&mut first) { theme::install_fonts(ui.ctx()); theme::apply(ui.ctx(), true); return; }
+            egui::CentralPanel::default().show(ui, |ui| { app.editor_tabs(ui); });
+            app.dialogs(ui.ctx());
+        }, app);
+        h.run_steps(4);
+        h.render().unwrap().save(dir.join("update-notice.png")).unwrap();
+        // "Skip This Version" remembers it and hides the notice.
+        h.get_by_label(tr("Skip This Version")).click();
+        h.run_steps(2);
+        assert!(h.state().update.is_none());
+        assert_eq!(h.state().skipped_version.as_deref(), Some("9.0.0"));
     }
 
     #[test]
