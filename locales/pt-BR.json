@@ -513,6 +513,7 @@
     "There is no bucket to query": "Não há nenhum bucket para consultar",
     "Unreadable response from InfluxDB: {error}": "Resposta ilegível do InfluxDB: {error}",
     "InfluxDB: {message}. InfluxQL needs a database/retention policy mapping for the bucket (created automatically since InfluxDB 2.4; before, with `influx v1 dbrp create`); Flux needs none.": "InfluxDB: {message}. O InfluxQL precisa de um mapeamento de banco de dados/política de retenção para o bucket (criado automaticamente desde o InfluxDB 2.4; antes, com `influx v1 dbrp create`); o Flux não precisa.",
+    "Signing in to Kusto needs HTTPS: turn on \"Use TLS\"": "Entrar no Kusto requer HTTPS: ative \"Usar TLS\"",
     "Azure CLI: {message}": "CLI do Azure: {message}",
     "HTTP {status} from Kusto: {message}": "HTTP {status} do Kusto: {message}",
     "Kusto: {message}": "Kusto: {message}",

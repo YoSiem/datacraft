@@ -513,6 +513,7 @@
     "There is no bucket to query": "クエリを実行するバケットがありません",
     "Unreadable response from InfluxDB: {error}": "InfluxDB からの応答を読み取れません: {error}",
     "InfluxDB: {message}. InfluxQL needs a database/retention policy mapping for the bucket (created automatically since InfluxDB 2.4; before, with `influx v1 dbrp create`); Flux needs none.": "InfluxDB: {message}。InfluxQL にはバケットのデータベース/保持ポリシーのマッピングが必要です（InfluxDB 2.4 以降は自動で作成されます。それ以前は `influx v1 dbrp create` で作成します）。Flux には不要です。",
+    "Signing in to Kusto needs HTTPS: turn on \"Use TLS\"": "Kusto へのサインインには HTTPS が必要です:「TLS を使用」をオンにしてください",
     "Azure CLI: {message}": "Azure CLI: {message}",
     "HTTP {status} from Kusto: {message}": "Kusto からの HTTP {status}: {message}",
     "Kusto: {message}": "Kusto: {message}",

@@ -134,6 +134,10 @@ impl KustoSession {
             .build()
             .map_err(http_error)?;
         let base = cluster_url(cfg);
+        // A token over plain HTTP could be read on the way; only the emulator (no auth) uses it.
+        if !matches!(auth, Auth::None) && !base.starts_with("https://") {
+            bail!(tr("Signing in to Kusto needs HTTPS: turn on \"Use TLS\""));
+        }
         let (login, resource) = match auth {
             Auth::None => (String::new(), String::new()),
             _ => cloud(&http, &base).await,
@@ -289,17 +293,43 @@ impl KustoSession {
     }
 }
 
-/// The cluster's Entra ID login endpoint and token audience, or the public cloud's.
+/// Entra ID login hosts of the Azure clouds: the client secret is only sent to one of these.
+const LOGIN_HOSTS: &[&str] = &["login.microsoftonline.com", "login.microsoftonline.us", "login.chinacloudapi.cn", "login.partner.microsoftonline.cn"];
+/// Domains of Kusto's token audiences: a token for anything else (Azure Resource Manager…) is
+/// never requested for the cluster.
+const KUSTO_DOMAINS: &[&str] =
+    &["kusto.windows.net", "kusto.usgovcloudapi.net", "kusto.chinacloudapi.cn", "kusto.fabric.microsoft.com", "kustomfa.windows.net"];
+
+/// The host of an `https://` URL, lowercased.
+fn https_host(url: &str) -> Option<String> {
+    let url = reqwest::Url::parse(url).ok()?;
+    (url.scheme() == "https").then(|| url.host_str().map(str::to_ascii_lowercase)).flatten()
+}
+
+/// The cluster's Entra ID login endpoint and token audience, or the public cloud's. The metadata
+/// comes from the cluster unauthenticated, so it is only taken when it names a Microsoft login
+/// host and a Kusto audience (or the cluster itself): a hostile address can't redirect the client
+/// secret, nor get a token meant for another Azure service.
 async fn cloud(http: &reqwest::Client, base: &str) -> (String, String) {
     let metadata: Option<Value> = async {
         let resp = http.get(format!("{base}/v1/rest/auth/metadata")).timeout(Duration::from_secs(10)).send().await.ok()?;
         resp.json().await.ok()
     }
     .await;
+    trusted_cloud(metadata.as_ref(), base)
+}
+
+/// `cloud`'s choice from the cluster's metadata.
+fn trusted_cloud(metadata: Option<&Value>, base: &str) -> (String, String) {
     let get = |key: &str| {
-        metadata.as_ref().and_then(|m| m["AzureAD"][key].as_str()).map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty())
+        metadata.and_then(|m| m["AzureAD"][key].as_str()).map(|s| s.trim().trim_end_matches('/').to_string()).filter(|s| !s.is_empty())
     };
-    (get("LoginEndpoint").unwrap_or_else(|| LOGIN_ENDPOINT.into()), get("KustoServiceResourceId").unwrap_or_else(|| base.to_string()))
+    let login = get("LoginEndpoint").filter(|l| https_host(l).is_some_and(|h| LOGIN_HOSTS.contains(&h.as_str())));
+    let cluster = https_host(base);
+    let resource = get("KustoServiceResourceId").filter(|r| {
+        https_host(r).is_some_and(|h| Some(&h) == cluster.as_ref() || KUSTO_DOMAINS.iter().any(|d| h.ends_with(&format!(".{d}"))))
+    });
+    (login.unwrap_or_else(|| LOGIN_ENDPOINT.into()), resource.unwrap_or_else(|| base.to_string()))
 }
 
 /// `az account get-access-token` for the cluster's audience: (token, lifetime).
@@ -737,6 +767,24 @@ mod tests {
         cfg.port = 8080;
         cfg.set_property("tls", "false");
         assert_eq!(cluster_url(&cfg), "http://localhost:8080");
+    }
+
+    #[test]
+    fn only_microsoft_logins_and_kusto_audiences_are_trusted() {
+        let meta = |login: &str, resource: &str| json!({ "AzureAD": { "LoginEndpoint": login, "KustoServiceResourceId": resource } });
+        let base = "https://help.kusto.windows.net";
+        let public = meta("https://login.microsoftonline.com/", "https://kusto.kusto.windows.net");
+        assert_eq!(trusted_cloud(Some(&public), base), (LOGIN_ENDPOINT.into(), "https://kusto.kusto.windows.net".into()));
+        let gov = meta("https://login.microsoftonline.us", "https://kusto.kusto.usgovcloudapi.net");
+        assert_eq!(trusted_cloud(Some(&gov), "https://c.kusto.usgovcloudapi.net").0, "https://login.microsoftonline.us");
+        // A hostile cluster: the secret stays with Microsoft's login, the token is for the cluster.
+        let evil = meta("https://login.evil.example", "https://management.azure.com");
+        assert_eq!(trusted_cloud(Some(&evil), "https://evil.example"), (LOGIN_ENDPOINT.into(), "https://evil.example".into()));
+        let lookalike = meta("http://login.microsoftonline.com", "https://kusto.windows.net.evil.example");
+        assert_eq!(trusted_cloud(Some(&lookalike), base), (LOGIN_ENDPOINT.into(), base.into()));
+        // The cluster's own address as the audience.
+        assert_eq!(trusted_cloud(Some(&meta("", "https://my.cluster.example/")), "https://my.cluster.example").1, "https://my.cluster.example");
+        assert_eq!(trusted_cloud(None, base), (LOGIN_ENDPOINT.into(), base.into()));
     }
 
     #[test]
