@@ -201,6 +201,8 @@ Get packaged builds from the official [GitHub Releases](https://github.com/javy-
 
 The macOS app is not notarized and Windows executables are unsigned, so the operating system may show a first-launch warning. Check the release notes for the build you download.
 
+**Updates:** a few seconds after launch DataCraft checks the latest release on GitHub and, when a newer one is out, shows a notice with a link to its page (**Skip This Version** hides it until the next one). **Check for Updates…** checks right away, and the check can be turned off in Settings. Nothing is downloaded or installed automatically.
+
 ## Build from source
 
 Use a Rust toolchain with support for the 2024 edition and the native build tools for your platform.
