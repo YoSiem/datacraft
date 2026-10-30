@@ -97,6 +97,9 @@ fn register_windows(executable: &str, key: &str) -> anyhow::Result<()> {
 
 #[cfg(target_os = "linux")]
 fn install(executable: &Path) -> anyhow::Result<()> {
+    if command("systemctl", &["--user", "show-environment"]).is_err() {
+        return install_xdg(executable);
+    }
     let dir = dirs::config_dir()
         .context("find user configuration directory")?
         .join("systemd/user");
@@ -111,6 +114,28 @@ fn install(executable: &Path) -> anyhow::Result<()> {
         "systemctl",
         &["--user", "enable", "--now", "datacraft-scheduler.service"],
     )
+}
+
+#[cfg(target_os = "linux")]
+fn install_xdg(executable: &Path) -> anyhow::Result<()> {
+    let path = executable
+        .to_str()
+        .context("Executable path is not valid Unicode")?;
+    let dir = dirs::config_dir()
+        .context("find user configuration directory")?
+        .join("autostart");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("datacraft-scheduler.desktop"), xdg_entry(path)?)?;
+    let mut child = Command::new(executable)
+        .arg("--scheduler")
+        .spawn()
+        .context("start background scheduler")?;
+    std::thread::Builder::new()
+        .name("sql-scheduler-reaper".into())
+        .spawn(move || {
+            let _ = child.wait();
+        })?;
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -167,6 +192,26 @@ fn systemd_unit(path: &str) -> anyhow::Result<String> {
     ))
 }
 
+#[cfg(any(test, target_os = "linux"))]
+fn xdg_entry(path: &str) -> anyhow::Result<String> {
+    if path.chars().any(char::is_control) || path.contains(['=', '%']) {
+        bail!("Executable path cannot be represented in XDG autostart");
+    }
+    let mut escaped = String::new();
+    for ch in path.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\\\\\"),
+            '"' => escaped.push_str("\\\\\""),
+            '$' => escaped.push_str("\\\\$"),
+            '`' => escaped.push_str("\\\\`"),
+            ch => escaped.push(ch),
+        }
+    }
+    Ok(format!(
+        "[Desktop Entry]\nType=Application\nName=DataCraft SQL scheduler\nExec=\"{escaped}\" --scheduler\nTerminal=false\n"
+    ))
+}
+
 #[cfg(any(test, target_os = "macos"))]
 fn launchd_plist(path: &str) -> anyhow::Result<String> {
     if path
@@ -195,6 +240,9 @@ mod tests {
         let unit = systemd_unit("/home/a b/$name%1/\\\"datacraft").unwrap();
         assert!(unit.contains("ExecStart=\"/home/a b/$$name%%1/\\\\\\\"datacraft\" --scheduler"));
         assert!(systemd_unit("/bad\npath").is_err());
+        let entry = xdg_entry("/home/a b/$name/\\\"data").unwrap();
+        assert!(entry.contains("Exec=\"/home/a b/\\\\$name/\\\\\\\\\\\\\"data\" --scheduler"));
+        assert!(xdg_entry("/bad%name").is_err());
         let plist = launchd_plist("/Applications/A & B <app>/DataCraft").unwrap();
         assert!(plist.contains("<string>/Applications/A &amp; B &lt;app&gt;/DataCraft</string>"));
         assert!(launchd_plist("/bad\0path").is_err());
@@ -220,21 +268,33 @@ mod tests {
                 .starts_with(runner_temp.canonicalize().unwrap())
         );
 
-        struct Cleanup;
+        #[cfg(target_os = "linux")]
+        let xdg = std::env::var_os("DATACRAFT_TEST_XDG").is_some();
+        struct Cleanup {
+            #[cfg(target_os = "linux")]
+            xdg: bool,
+        }
         impl Drop for Cleanup {
             fn drop(&mut self) {
                 #[cfg(target_os = "linux")]
                 {
-                    let _ = command(
-                        "systemctl",
-                        &["--user", "disable", "--now", "datacraft-scheduler.service"],
-                    );
                     if let Some(dir) = dirs::config_dir() {
-                        let _ = std::fs::remove_file(
-                            dir.join("systemd/user/datacraft-scheduler.service"),
-                        );
+                        if self.xdg {
+                            let _ = command("pkill", &["-x", "datacraft"]);
+                            let _ = std::fs::remove_file(
+                                dir.join("autostart/datacraft-scheduler.desktop"),
+                            );
+                        } else {
+                            let _ = command(
+                                "systemctl",
+                                &["--user", "disable", "--now", "datacraft-scheduler.service"],
+                            );
+                            let _ = std::fs::remove_file(
+                                dir.join("systemd/user/datacraft-scheduler.service"),
+                            );
+                            let _ = command("systemctl", &["--user", "daemon-reload"]);
+                        }
                     }
-                    let _ = command("systemctl", &["--user", "daemon-reload"]);
                 }
                 #[cfg(target_os = "macos")]
                 {
@@ -253,7 +313,10 @@ mod tests {
                 }
             }
         }
-        let _cleanup = Cleanup;
+        let _cleanup = Cleanup {
+            #[cfg(target_os = "linux")]
+            xdg,
+        };
         let database = profile.join("sample.sqlite");
         let sample = rusqlite::Connection::open(&database).unwrap();
         sample
@@ -281,6 +344,23 @@ mod tests {
         let id = store.save(&job, now() - 30).unwrap();
         let executable =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug/datacraft");
+        #[cfg(target_os = "linux")]
+        if xdg {
+            install_xdg(&executable).unwrap();
+            let desktop = dirs::config_dir()
+                .unwrap()
+                .join("autostart/datacraft-scheduler.desktop");
+            assert!(
+                Command::new("desktop-file-validate")
+                    .arg(desktop)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        } else {
+            install(&executable).unwrap();
+        }
+        #[cfg(target_os = "macos")]
         install(&executable).unwrap();
         wait_for_start().unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);

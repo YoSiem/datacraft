@@ -9,8 +9,9 @@ that execution has finished; pausing prevents its next execution.
 
 An enabled task starts a separate background process and registers it to start
 when the user signs in: the current user's Run entry on Windows, a LaunchAgent
-on macOS, or a user systemd service on Linux. Linux requires a working systemd
-user manager. The process does not open a window and continues after DataCraft
+on macOS, or a user systemd service on Linux. When the systemd user manager is
+unavailable, Linux uses the desktop's XDG autostart mechanism, which requires
+an XDG-compatible desktop session. The process does not open a window and continues after DataCraft
 closes. It runs only while the computer and user session are available; it does
 not wake a sleeping computer or run while the user is signed out. Keep the
 DataCraft executable in its registered location. If it moves, open the scheduler
