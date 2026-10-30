@@ -7,13 +7,13 @@
 <p align="center">
   <strong>A native workspace for your databases.</strong><br>
   Explore schemas, write queries and edit data in a focused desktop app built with Rust and egui.<br>
-  macOS · Windows
+  macOS · Windows · Linux
 </p>
 
 <p align="center">
   <a href="LICENSE-MIT"><img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-22a8b8?style=flat-square"></a>
   <img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-Rust-253b53?style=flat-square&logo=rust">
-  <a href="https://github.com/javy-fernandez/datacraft/releases"><img alt="Download for macOS and Windows" src="https://img.shields.io/badge/download-macOS%20%C2%B7%20Windows-22a8b8?style=flat-square"></a>
+  <a href="https://github.com/javy-fernandez/datacraft/releases"><img alt="Download for macOS, Windows and Linux" src="https://img.shields.io/badge/download-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-22a8b8?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -71,6 +71,8 @@ Groups and colors are local preferences; they do not change the database. See [o
 
 SQL consoles provide syntax highlighting, completion, formatting, find and replace, query history, execution plans and cancellation. Run the current statement, a selection or the entire script. SQL Server scripts support <code>GO</code> batches.
 
+On PostgreSQL, MySQL and MariaDB, **Explain Plan** (⇧⌘E) shows the plan as a tree with each step's object, estimated rows and cost; **Explain Analyze** in the editor's menu also runs the statement and adds actual rows and time, asking first when the statement writes. The steps that take most of the cost or time are highlighted, and **Show as Text** gives the server's own output. Other engines show their text plans.
+
 <p align="center">
   <img src="docs/screenshots/readme/sql-console.png" alt="Full DataCraft window with a highlighted SQL query and its result grid" width="100%">
   <br>
@@ -78,6 +80,8 @@ SQL consoles provide syntax highlighting, completion, formatting, find and repla
 </p>
 
 Redis/Valkey and MongoDB consoles use their own commands, including <code>HGETALL user:1</code> and <code>db.orders.find({total: {$gte: 100}})</code>. Their result grids are read-only.
+
+The Kusto console takes KQL queries and control commands, such as <code>StormEvents | summarize count() by State</code> and <code>.show tables</code>; requests are separated by blank lines, and the result grids are read-only too.
 
 ## Edit data with clear feedback
 
@@ -93,16 +97,18 @@ Pending edits have a distinct highlight. Updates, inserted rows and deletions ca
 
 The cell editor supports multiline text and a UTF-8 hex view. The inspector switches between table information, the selected column and the current record. Read-only connections disable editing and DDL.
 
+To read a whole value, Alt+Click (⌥-click on macOS) any cell, double-click a cell that can't be edited, or choose View Value from its context menu: a popup below the cell shows it, with JSON indented, and Esc or a click outside closes it.
+
 [Table editing and shortcuts →](docs/table-editor.md)
 
 ## Build filters before applying them
 
-Combine enabled conditions in nested **AND/OR** groups, choose comparison or text operators, and add ordered sort columns. Switch to **Text** mode for custom <code>WHERE</code> and <code>ORDER BY</code> expressions. Editing the draft does not run a query; **Apply** reloads the data.
+Choose **AND/OR** on each condition row to mix operators, and use groups with visible parentheses to control precedence. Add comparison or text conditions and ordered sort columns. Switch to **Text** mode for custom <code>WHERE</code> and <code>ORDER BY</code> expressions. Editing the draft does not run a query; **Apply** reloads the data.
 
 <p align="center">
   <img src="docs/screenshots/readme/filter-sort.png" alt="Full DataCraft window with the structured filter and sort builder above the table" width="100%">
   <br>
-  <sub>A filter draft and sort rule, ready to apply.</sub>
+  <sub>Mixed AND/OR conditions and a sort rule, ready to apply.</sub>
 </p>
 
 Ctrl+F, or Command+F on macOS, searches the currently loaded cells. **Find in Schema…** searches the database instead. See [search behavior and scope](docs/navigation-search.md).
@@ -114,6 +120,7 @@ Ctrl+F, or Command+F on macOS, searches the currently loaded cells. **Find in Sc
 - **Mask values:** apply consistent per-column masking during table copies or exports.
 - **Manage objects:** create and modify tables and views, review generated DDL, and manage MySQL/MariaDB users or PostgreSQL roles and privileges.
 - **Back up databases:** open **Back up database…** from the Database Explorer, review engine-specific options and choose a destination. Jobs run in the background with cancellation and local history.
+- **Run SQL scripts:** **Run SQL Script…** on a connection or database runs one or more `.sql` files without opening them. They are read in pieces, so a dump of several GB doesn't fill memory, and each engine's separators are respected (`GO` on SQL Server, `DELIMITER` on MySQL, `/` on Oracle). Progress and Cancel are shown; a failing statement asks Retry, Skip, Skip All or Stop, and the summary lists each failure with its file and line.
 
 <p align="center">
   <img src="docs/screenshots/readme/database-backup.png" alt="Full DataCraft window with the MariaDB backup dialog and its destination, utility and compression settings" width="100%">
@@ -133,17 +140,52 @@ PostgreSQL, MySQL and MariaDB backups require their native dump utilities. SQLit
 | Oracle | SQL console, data editor, object management and Data Pump exports; requires Oracle Instant Client |
 | Snowflake | Native REST connection without Java; password, key-pair, OAuth or programmatic access token authentication |
 | SQLite | Local database files, SQL console, data editor and online backups |
+| ClickHouse | Native TCP protocol (port 9000, or 9440 with TLS checked against the system's certificates), SQL console and data editor for inserts only (updates and deletes are asynchronous mutations, run them from the console). Copies into ClickHouse run without a transaction |
 | Redis / Valkey | Native commands, keys grouped by prefix, type/TTL information and read-only result grids |
 | MongoDB | <code>mongosh</code>-style commands, collection browsing and read-only result grids |
+| InfluxDB 2 | HTTP API (port 8086, HTTPS with "Use TLS") with an API token and an organization; Flux and InfluxQL consoles, buckets and measurements with their tags and fields, and read-only result grids filtered by a Flux predicate and a time range (the last hour by default). InfluxQL needs InfluxDB 2.4+ or a DBRP mapping |
+| Kusto / Azure Data Explorer | REST API over HTTPS, signed in with the Azure CLI's account (`az login`), an Entra ID application (client ID and secret), or no authentication for the Kusto emulator; KQL console with control commands (requests separated by blank lines, as in Kusto Explorer), databases with their tables and materialized views, and read-only result grids filtered and sorted with KQL. Read-only connections are also enforced by the server |
+
+### SSH tunnels
+
+Every engine reached over TCP (all but SQLite, Snowflake and Kusto) can connect through a bastion host. Tick **Use SSH tunnel** in the data source's **SSH** tab and give the bastion's host, port and user, then sign in with a password, a private key (OpenSSH or PEM, with its passphrase) or the running SSH agent. The host and port in **General** stay the database's address as the bastion reaches it, often `localhost`.
+
+- The first time a bastion is reached, Test Connection shows its key fingerprint and asks before trusting it. Keys already in `~/.ssh/known_hosts` are trusted, others go to DataCraft's own `ssh_known_hosts`, and a bastion whose key changed is refused, naming both fingerprints.
+- The sessions of a data source share one SSH connection, with keepalives every 30 seconds. If it drops, the next query opens it again.
+- With TLS, the certificate is still checked against the database's own host name for PostgreSQL, MySQL, MariaDB, SQL Server, ClickHouse and InfluxDB. MongoDB checks the certificate chain but not the name, which can't match the tunnel's local address. A replica set or `mongodb+srv` address can't be used through a tunnel: point it at one server.
+- SSH passwords and passphrases are kept in the system keychain, like database passwords.
+
+### SSL
+
+PostgreSQL, MySQL and MariaDB data sources choose how the connection is encrypted in the **SSL** part of the **SSH/SSL** tab:
+
+| Mode | Encrypted | Certificate |
+| --- | --- | --- |
+| Prefer (default) | When the server offers it | Not checked |
+| Disable | Never | — |
+| Require | Always | Not checked |
+| Verify CA | Always | Signed by the CA file, or by a CA the system trusts |
+| Verify full | Always | Signed as above and issued for the host |
+
+- **Client certificates:** a client certificate and key (PEM; an encrypted PKCS#8 key takes its passphrase, kept in the keychain) sign users in when the server asks for one.
+- **Renewed certificates:** the files are read on every connect, so a renewed certificate needs no edit.
+- **Test Connection** names the TLS version and cipher. A refused certificate says which CA didn't sign it, or which host it wasn't issued for.
+- **Through an SSH tunnel,** the certificate is still checked against the database's own host name.
+
+### Bring your connections
+
+- **Paste a URL:** the URL field also takes `postgresql://`, `mysql://`, `mariadb://`, `sqlserver://`, `mongodb://`, `mongodb+srv://`, `redis://`, `rediss://` and `clickhouse://` URLs, and a SQLite file's path. The engine, user, password and SSL settings are filled in; the password goes to the system keychain.
+- **Copy as URL:** a connection's context menu copies its URL for other tools, without the password.
+- **Import from DataGrip:** **+ → Import from DataGrip…** lists the data sources of DataGrip's projects (or any `dataSources.xml`) with their engine, folder and address. Engines DataCraft doesn't support are shown but can't be ticked, existing ones are left unticked and a name in use is imported as a copy. Passwords aren't imported: DataCraft asks for each one on the first connect. DataGrip's files are only read.
 
 Support varies by engine, server version and account privileges. [Oracle Instant Client](https://www.oracle.com/database/technologies/instant-client.html) must be installed separately for Oracle connections.
 
 ## Designed for the desktop
 
-- **macOS and Windows:** native macOS menus and window controls; a unified application header on Windows.
+- **macOS, Windows and Linux:** native macOS menus and window controls, a unified application header on Windows, and a native Wayland/X11 window on Linux.
 - **Light and dark themes:** adjustable interface zoom and editor font size.
 - **Eight interface languages:** English, Spanish, French, Brazilian Portuguese, German, Polish, Simplified Chinese and Japanese. Follow the system language or choose one in Settings.
-- **OS credential storage:** saved passwords use macOS Keychain or Windows Credential Manager, rather than the connections file.
+- **OS credential storage:** saved passwords use macOS Keychain, Windows Credential Manager or the Linux Secret Service (GNOME Keyring, KWallet), rather than the connections file.
 
 Built with Rust, egui/wgpu and Tokio. Database work runs through background workers to keep the interface responsive.
 
@@ -156,8 +198,11 @@ Get packaged builds from the official [GitHub Releases](https://github.com/javy-
 | macOS 11+ · Apple Silicon and Intel | <code>DataCraft-&lt;version&gt;-universal.dmg</code> | Open the disk image and move DataCraft to Applications. |
 | Windows 10/11 · x64 | <code>DataCraft-&lt;version&gt;-windows-x64.zip</code> | Extract the archive and run <code>DataCraft.exe</code>. |
 | Windows on ARM · ARM64 | <code>DataCraft-&lt;version&gt;-windows-arm64.zip</code> | Extract the archive and run <code>DataCraft.exe</code>. |
+| Linux · x64 and ARM64 (glibc 2.35+) | <code>DataCraft-&lt;version&gt;-linux-x64.tar.gz</code> / <code>-linux-arm64.tar.gz</code> | Extract the archive and run <code>DataCraft/datacraft</code>. Needs a Vulkan driver, SQLite, D-Bus and a Secret Service provider (GNOME Keyring or KWallet). |
 
 The macOS app is not notarized and Windows executables are unsigned, so the operating system may show a first-launch warning. Check the release notes for the build you download.
+
+**Updates:** a few seconds after launch DataCraft checks the latest release on GitHub and, when a newer one is out, shows a notice with a link to its page (**Skip This Version** hides it until the next one). **Check for Updates…** checks right away, and the check can be turned off in Settings. Nothing is downloaded or installed automatically.
 
 ## Build from source
 
@@ -176,6 +221,15 @@ cargo build --locked --release
 ~~~
 
 The output is <code>target/release/datacraft.exe</code>. Native MSVC builds require the Visual Studio C++ build tools and Windows SDK, including the resource compiler used to embed the application icon.
+
+On Linux, the same commands build a native Wayland/X11 app rendered with Vulkan. The build links the system SQLite and D-Bus libraries, so install their development packages first:
+
+~~~sh
+sudo dnf install gcc pkgconf-pkg-config sqlite-devel dbus-devel      # Fedora
+sudo apt install build-essential pkg-config libsqlite3-dev libdbus-1-dev  # Debian / Ubuntu
+~~~
+
+At runtime it needs a Vulkan driver and a Secret Service provider, such as GNOME Keyring or KWallet, to store saved passwords.
 
 On macOS:
 

@@ -82,6 +82,8 @@ struct CompletionItem {
     text: String,
     kind: ItemKind,
     detail: String,
+    /// Order given by the context (lower first).
+    rank: u8,
 }
 
 struct Completion {
@@ -90,6 +92,8 @@ struct Completion {
     selected: usize,
     items: Vec<CompletionItem>,
     scroll_to_selected: bool,
+    /// Opened by typing (not ⌃Space or a dot): closes when only the typed word is left.
+    auto: bool,
 }
 
 pub struct Console {
@@ -153,6 +157,8 @@ enum EditCmd {
     Duplicate,
     DeleteLine,
     Explain,
+    /// Runs the statement and shows the plan with actual rows and time (asks first if it writes).
+    ExplainAnalyze,
     History,
     Find,
     Replace,
@@ -209,6 +215,8 @@ pub enum ConsoleAction {
     RunAll,
     /// Run these statements as they are (e.g. the explain plan of the current statement).
     RunStatements(Vec<String>),
+    /// "Explain Analyze" of `statement`: `explain` runs it, so the app asks first if it writes.
+    ExplainAnalyze { statement: String, explain: String },
     /// Cancel the running query.
     Cancel,
     /// Reload the table editor data (with the current filters).
@@ -243,6 +251,8 @@ pub struct ConsoleCtx<'a> {
     pub font_size: f32,
     /// Columns of the open table (data editor), to mark primary keys.
     pub columns: Option<&'a [ColumnInfo]>,
+    /// Show completions while typing (Settings).
+    pub auto_complete: bool,
 }
 
 impl Console {
@@ -529,17 +539,24 @@ impl Console {
     fn apply_cmd(&mut self, ctx: &egui::Context, cx: &ConsoleCtx<'_>, cmd: EditCmd, actions: &mut Vec<ConsoleAction>) {
         match cmd {
             EditCmd::Format => self.reformat(ctx, cx),
-            EditCmd::ToggleComment => self.edit_lines(ctx, toggle_line_comment),
+            // KQL's comments are `//`.
+            EditCmd::ToggleComment => self.edit_lines(ctx, if cx.driver == Driver::Kusto { toggle_slash_comment } else { toggle_line_comment }),
             EditCmd::Duplicate => self.edit_lines(ctx, duplicate_lines),
             EditCmd::DeleteLine => self.edit_lines(ctx, delete_lines),
-            EditCmd::Explain => {
+            EditCmd::Explain | EditCmd::ExplainAnalyze => {
                 if !self.is_busy() {
                     let stmt = match self.selection() {
                         Some(sel) => sql::split_statements(sel, cx.driver).into_iter().next(),
                         None => sql::statement_at(&self.text, self.cursor_byte(), cx.driver),
                     };
-                    let statements = stmt.map(|s| sql::explain_statements(&s.text, cx.driver)).unwrap_or_default();
-                    actions.push(ConsoleAction::RunStatements(statements));
+                    let Some(stmt) = stmt else { return };
+                    // PostgreSQL, MySQL and MariaDB give a plan the results show as a tree.
+                    match crate::db::plan::explain_statement(&stmt.text, cx.driver, cmd == EditCmd::ExplainAnalyze) {
+                        Some(explain) if cmd == EditCmd::ExplainAnalyze => actions.push(ConsoleAction::ExplainAnalyze { statement: stmt.text, explain }),
+                        Some(explain) => actions.push(ConsoleAction::RunStatements(vec![explain])),
+                        None if cmd == EditCmd::Explain => actions.push(ConsoleAction::RunStatements(sql::explain_statements(&stmt.text, cx.driver))),
+                        None => {}
+                    }
                 }
             }
             EditCmd::History => {
@@ -886,7 +903,7 @@ impl Console {
         }
         self.table_toolbar(ui, cx, &mut actions);
         hline(ui);
-        if cx.driver.is_nosql() { self.filter_row(ui, &mut actions); hline(ui); }
+        if cx.driver.is_nosql() { self.filter_row(ui, cx.driver, &mut actions); hline(ui); }
         else if let Some(t) = &mut self.table && t.view.filter_sort {
             if ui.add_enabled_ui(!self.running, |ui| t.filter_sort.show(ui, cx.driver, cx.columns.unwrap_or(&[]))).inner { actions.push(ConsoleAction::ApplyFilter); }
             hline(ui);
@@ -1254,7 +1271,7 @@ impl Console {
     }
 
     /// "WHERE | ORDER BY" row of the data editor.
-    fn filter_row(&mut self, ui: &mut Ui, actions: &mut Vec<ConsoleAction>) {
+    fn filter_row(&mut self, ui: &mut Ui, driver: Driver, actions: &mut Vec<ConsoleAction>) {
         let p = pal(ui);
         let Some(t) = self.table.as_mut() else { return };
         let id = self.id;
@@ -1265,9 +1282,16 @@ impl Console {
         let right = Rect::from_min_max(pos2(rect.left() + half, rect.top()), rect.max);
         ui.painter().vline(left.right(), rect.y_range().shrink(6.0), Stroke::new(1.0, p.grid));
         let mut submit = false;
+        // InfluxDB: a Flux predicate on `r` and the time range (see `influx::table_query`). Kusto:
+        // a KQL predicate and sort, piped into `where` and `order by` (see `kusto::table_query`).
+        let (where_hint, order_hint) = match driver {
+            Driver::InfluxDb => ("r.host == \"web-1\"", "start: -1h"),
+            Driver::Kusto => ("| where", "| order by"),
+            _ => ("WHERE", "ORDER BY"),
+        };
         for (r, ico, hint, text, salt) in [
-            (left, Ico::Filter, "WHERE", &mut t.where_clause, "where"),
-            (right, Ico::Sort, "ORDER BY", &mut t.order_by, "order"),
+            (left, Ico::Filter, where_hint, &mut t.where_clause, "where"),
+            (right, Ico::Sort, order_hint, &mut t.order_by, "order"),
         ] {
             icons::paint(
                 ui.painter(),
@@ -1472,7 +1496,7 @@ impl Console {
                 removed
             });
             if open_req && let Some((_, c)) = self.cursor {
-                self.open_completion(c, cx);
+                self.open_completion(c, cx, false);
             }
         }
         if accept {
@@ -1529,6 +1553,7 @@ impl Console {
         let gutter_w = digits * cx.font_size * 0.62 + 22.0;
 
         let mut typed_dot = false;
+        let mut typed_letter = false;
         let mut new_cursor = None;
         let scroll_target = self.scroll_to.take();
         let mut popup_anchor = None;
@@ -1592,6 +1617,9 @@ impl Console {
                             typed_dot = ui.input(|i| {
                                 i.events.iter().any(|e| matches!(e, Event::Text(t) if t.ends_with('.')))
                             });
+                            typed_letter = ui.input(|i| {
+                                i.events.iter().any(|e| matches!(e, Event::Text(t) if t.chars().count() == 1 && t.chars().all(is_ident_char)))
+                            });
                         }
                         if self.completion.is_some()
                             && let Some((_, _, primary)) = new_cursor
@@ -1603,7 +1631,7 @@ impl Console {
                             let r = output.galley.pos_from_cursor(CCursor::new(c)).translate(output.galley_pos.to_vec2());
                             ui.scroll_to_rect(r.expand2(vec2(40.0, row_h)), Some(egui::Align::Center));
                         }
-                        output.response.context_menu(|ui| editor_menu(ui, busy, cmds));
+                        output.response.context_menu(|ui| editor_menu(ui, busy, crate::db::plan::explain_statement("x", driver, true).is_some(), cmds));
                     });
                 });
         });
@@ -1612,7 +1640,16 @@ impl Console {
             self.cursor = Some((a, b));
         }
         if typed_dot && let Some((_, c)) = self.cursor {
-            self.open_completion(c, cx);
+            self.open_completion(c, cx, false);
+        } else if typed_letter
+            && cx.auto_complete
+            && !cx.driver.is_nosql()
+            && self.completion.is_none()
+            && let Some((a, c)) = self.cursor
+            && a == c
+            && auto_trigger(&self.text, c)
+        {
+            self.open_completion(c, cx, true);
         }
         if self.completion.is_some() {
             self.refresh_completion(cx);
@@ -1646,7 +1683,9 @@ impl Console {
                 egui::Frame::popup(ui.style()).inner_margin(4).show(ui, |ui| {
                     ui.set_min_width(300.0);
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {
+                    // Without a minimum the list shrinks to the scroll area's default 64 px.
+                    let list_h = (comp.items.len() as f32 * 24.0).min(240.0);
+                    egui::ScrollArea::vertical().min_scrolled_height(list_h).max_height(240.0).show(ui, |ui| {
                         for (i, item) in comp.items.iter().enumerate() {
                             let sel = i == comp.selected;
                             let ico = match item.kind {
@@ -1697,14 +1736,14 @@ impl Console {
         clicked
     }
 
-    fn open_completion(&mut self, cursor: usize, cx: &ConsoleCtx<'_>) {
+    fn open_completion(&mut self, cursor: usize, cx: &ConsoleCtx<'_>, auto: bool) {
         let chars: Vec<char> = self.text.chars().collect();
         let cursor = cursor.min(chars.len());
         let mut start = cursor;
         while start > 0 && is_ident_char(chars[start - 1]) {
             start -= 1;
         }
-        self.completion = Some(Completion { start, selected: 0, items: Vec::new(), scroll_to_selected: false });
+        self.completion = Some(Completion { start, selected: 0, items: Vec::new(), scroll_to_selected: false, auto });
         self.refresh_completion(cx);
     }
 
@@ -1731,8 +1770,11 @@ impl Console {
         } else {
             None
         };
-        let items = build_items(&prefix, qualifier.as_deref(), &self.text, cx.schemas.unwrap_or(&[]));
-        if items.is_empty() {
+        let before: String = chars[..start].iter().collect();
+        let context = sql_context(&scan(&before));
+        let items = build_items(&prefix, qualifier.as_deref(), &self.text, cx.schemas.unwrap_or(&[]), context);
+        let only_typed = items.len() == 1 && items[0].text.eq_ignore_ascii_case(&prefix);
+        if items.is_empty() || (comp.auto && only_typed) {
             self.completion = None;
             return;
         }
@@ -1777,11 +1819,12 @@ fn take_key(i: &mut egui::InputState, mods: Modifiers, key: Key) -> bool {
 }
 
 /// Editor context menu (DataGrip's editor popup, with its shortcuts).
-fn editor_menu(ui: &mut Ui, busy: bool, cmds: &mut Vec<EditCmd>) {
+fn editor_menu(ui: &mut Ui, busy: bool, analyze: bool, cmds: &mut Vec<EditCmd>) {
     ui.set_min_width(250.0);
     let delete_line = if cfg!(target_os = "macos") { "⌘⌫" } else { "Ctrl+Y" };
-    let items: [(Option<EditCmd>, &str, &str, bool); 10] = [
+    let items: [(Option<EditCmd>, &str, &str, bool); 11] = [
         (Some(EditCmd::Explain), tr("Explain Plan"), "⇧⌘E", !busy),
+        (Some(EditCmd::ExplainAnalyze), tr("Explain Analyze"), "", !busy && analyze),
         (None, "", "", true),
         (Some(EditCmd::Format), tr("Reformat Code"), "⌥⌘L", true),
         (Some(EditCmd::ToggleComment), tr("Comment with Line Comment"), "⌘/", true),
@@ -1940,6 +1983,17 @@ fn line_start(chars: &[char], pos: usize) -> usize {
 /// every non-blank line is commented they are uncommented, otherwise `-- ` is added at the
 /// start of each one. Without a selection the caret moves to the next line.
 fn toggle_line_comment(text: &str, a: usize, b: usize) -> (String, usize, usize) {
+    toggle_comment(text, a, b, "-- ")
+}
+
+/// `toggle_line_comment` with `// ` (KQL).
+fn toggle_slash_comment(text: &str, a: usize, b: usize) -> (String, usize, usize) {
+    toggle_comment(text, a, b, "// ")
+}
+
+/// `marker`: the two comment characters and a space.
+fn toggle_comment(text: &str, a: usize, b: usize, marker: &'static str) -> (String, usize, usize) {
+    let mark: Vec<char> = marker.chars().collect();
     let chars: Vec<char> = text.chars().collect();
     let (a, b) = (a.min(b).min(chars.len()), a.max(b).min(chars.len()));
     let lines = touched_lines(&chars, a, b);
@@ -1950,7 +2004,7 @@ fn toggle_line_comment(text: &str, a: usize, b: usize) -> (String, usize, usize)
     }
     let commented = |&(s, e): &(usize, usize)| {
         let first = (s..e).find(|&i| !chars[i].is_whitespace());
-        first.is_some_and(|i| i + 1 < e && chars[i] == '-' && chars[i + 1] == '-')
+        first.is_some_and(|i| i + 1 < e && chars[i] == mark[0] && chars[i + 1] == mark[1])
     };
     let uncomment = targets.iter().filter(|l| content(l)).count() > 0 && targets.iter().all(commented);
     // Edits (position, removed chars, inserted text), ascending.
@@ -1962,7 +2016,7 @@ fn toggle_line_comment(text: &str, a: usize, b: usize) -> (String, usize, usize)
                 let del = if i + 2 < e && chars[i + 2] == ' ' { 3 } else { 2 };
                 (i, del, "")
             } else {
-                (s, 0, "-- ")
+                (s, 0, marker)
             }
         })
         .collect();
@@ -2072,16 +2126,140 @@ fn matches_prefix(candidate: &str, prefix: &str) -> bool {
     prefix.is_empty() || candidate.to_lowercase().starts_with(&prefix.to_lowercase())
 }
 
-fn build_items(prefix: &str, qualifier: Option<&str>, text: &str, schemas: &[SchemaInfo]) -> Vec<CompletionItem> {
+/// Where the word being completed sits, to list the likely candidates first.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SqlContext {
+    Any,
+    /// Right after FROM / JOIN / UPDATE / INTO / TABLE, or a comma in that list.
+    Tables,
+    /// In SELECT, WHERE, ON, ORDER / GROUP BY, SET, HAVING…
+    Columns,
+}
+
+/// Token before the word being completed.
+#[derive(Debug, PartialEq)]
+enum Prev {
+    Start,
+    Word(String),
+    Punct(char),
+}
+
+/// The text before the word being completed: whether it ends inside a string or comment,
+/// its last token and its last clause keyword.
+struct Scan {
+    in_literal: bool,
+    prev: Prev,
+    clause: Option<&'static str>,
+}
+
+const TABLE_CLAUSES: &[&str] = &["FROM", "JOIN", "UPDATE", "INTO", "TABLE"];
+const COLUMN_CLAUSES: &[&str] =
+    &["SELECT", "WHERE", "ON", "BY", "SET", "HAVING", "AND", "OR", "NOT", "DISTINCT", "WHEN", "THEN", "ELSE", "CASE"];
+
+fn scan(before: &str) -> Scan {
+    let chars: Vec<char> = before.chars().collect();
+    let literal = |prev, clause| Scan { in_literal: true, prev, clause };
+    let (mut i, mut prev, mut clause) = (0, Prev::Start, None);
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '-' && chars.get(i + 1) == Some(&'-') {
+            match chars[i..].iter().position(|&x| x == '\n') {
+                Some(n) => i += n + 1,
+                None => return literal(prev, clause),
+            }
+        } else if c == '/' && chars.get(i + 1) == Some(&'*') {
+            match chars[i + 2..].windows(2).position(|w| w == ['*', '/']) {
+                Some(n) => i += n + 4,
+                None => return literal(prev, clause),
+            }
+        } else if matches!(c, '\'' | '"' | '`' | '[') {
+            let close = if c == '[' { ']' } else { c };
+            match chars[i + 1..].iter().position(|&x| x == close) {
+                // A string or a quoted name: an operand, like a word that is not a keyword.
+                Some(n) => {
+                    prev = Prev::Word(c.to_string());
+                    i += n + 2;
+                }
+                None => return literal(prev, clause),
+            }
+        } else if is_ident_char(c) {
+            let from = i;
+            while i < chars.len() && is_ident_char(chars[i]) {
+                i += 1;
+            }
+            let word: String = chars[from..i].iter().collect();
+            let upper = word.to_ascii_uppercase();
+            if let Some(k) = TABLE_CLAUSES.iter().chain(COLUMN_CLAUSES).find(|k| **k == upper) {
+                clause = Some(*k);
+            }
+            prev = Prev::Word(word);
+        } else {
+            if !c.is_whitespace() {
+                prev = Prev::Punct(c);
+                if c == ';' {
+                    clause = None;
+                }
+            }
+            i += 1;
+        }
+    }
+    Scan { in_literal: false, prev, clause }
+}
+
+fn sql_context(scan: &Scan) -> SqlContext {
+    match scan.clause {
+        Some(k) if TABLE_CLAUSES.contains(&k) => {
+            let after_keyword = matches!(&scan.prev, Prev::Word(w) if w.eq_ignore_ascii_case(k));
+            if after_keyword || scan.prev == Prev::Punct(',') { SqlContext::Tables } else { SqlContext::Any }
+        }
+        Some(_) => SqlContext::Columns,
+        None => SqlContext::Any,
+    }
+}
+
+/// Whether typing at `cursor` should open the completion list by itself: at the start of a
+/// word that follows a keyword or an operator, not after a table name (where an alias goes),
+/// inside strings or comments, or in the middle of a word.
+fn auto_trigger(text: &str, cursor: usize) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    if cursor == 0 || cursor > chars.len() || chars.get(cursor).is_some_and(|c| is_ident_char(*c)) {
+        return false;
+    }
+    let mut start = cursor;
+    while start > 0 && is_ident_char(chars[start - 1]) {
+        start -= 1;
+    }
+    if chars[start].is_ascii_digit() || (start > 0 && chars[start - 1] == '.') {
+        return false;
+    }
+    let before: String = chars[..start].iter().collect();
+    let scan = scan(&before);
+    !scan.in_literal
+        && match &scan.prev {
+            Prev::Start => true,
+            Prev::Punct(c) => !matches!(c, '.' | ')' | ']'),
+            Prev::Word(w) => !w.eq_ignore_ascii_case("AS") && sql::KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(w)),
+        }
+}
+
+/// Tables named anywhere in the text (lowercase), whose columns go first in column positions.
+fn referenced_tables(text: &str, schemas: &[SchemaInfo]) -> std::collections::HashSet<String> {
+    let words: std::collections::HashSet<String> =
+        text.split(|c: char| !is_ident_char(c)).filter(|w| !w.is_empty()).map(str::to_lowercase).collect();
+    schemas.iter().flat_map(|s| &s.tables).map(|t| t.name.to_lowercase()).filter(|t| words.contains(t)).collect()
+}
+
+fn build_items(prefix: &str, qualifier: Option<&str>, text: &str, schemas: &[SchemaInfo], context: SqlContext) -> Vec<CompletionItem> {
     let mut items: Vec<CompletionItem> = Vec::new();
     let table_kind = |k: ObjectKind| if k == ObjectKind::Table { ItemKind::Table } else { ItemKind::View };
+    let item = |text: &str, kind: ItemKind, detail: String, rank: u8| CompletionItem { text: text.to_string(), kind, detail, rank };
 
     if let Some(q) = qualifier {
         // schema.<table>
         for s in schemas.iter().filter(|s| s.name.eq_ignore_ascii_case(q)) {
             for t in &s.tables {
                 if matches_prefix(&t.name, prefix) {
-                    items.push(CompletionItem { text: t.name.clone(), kind: table_kind(t.kind), detail: s.name.clone() });
+                    items.push(item(&t.name, table_kind(t.kind), s.name.clone(), 0));
                 }
             }
         }
@@ -2091,38 +2269,61 @@ fn build_items(prefix: &str, qualifier: Option<&str>, text: &str, schemas: &[Sch
             for t in s.tables.iter().filter(|t| t.name.eq_ignore_ascii_case(&table_name)) {
                 for c in &t.columns {
                     if matches_prefix(&c.name, prefix) {
-                        items.push(CompletionItem { text: c.name.clone(), kind: ItemKind::Column, detail: c.data_type.clone() });
+                        items.push(item(&c.name, ItemKind::Column, c.data_type.clone(), 0));
                     }
                 }
             }
         }
     } else {
-        let mut seen_cols = std::collections::HashSet::new();
+        let (object_rank, keyword_rank) = match context {
+            SqlContext::Any => (0, 0),
+            SqlContext::Tables => (0, 2),
+            SqlContext::Columns => (1, 2),
+        };
         for s in schemas {
             if schemas.len() > 1 && matches_prefix(&s.name, prefix) {
-                items.push(CompletionItem { text: s.name.clone(), kind: ItemKind::Schema, detail: tr("schema").into() });
+                items.push(item(&s.name, ItemKind::Schema, tr("schema").into(), object_rank.max(1)));
             }
             for t in &s.tables {
                 if matches_prefix(&t.name, prefix) {
-                    items.push(CompletionItem { text: t.name.clone(), kind: table_kind(t.kind), detail: s.name.clone() });
+                    items.push(item(&t.name, table_kind(t.kind), s.name.clone(), object_rank));
                 }
-                for c in &t.columns {
-                    if !prefix.is_empty() && matches_prefix(&c.name, prefix) && seen_cols.insert(c.name.to_lowercase()) {
-                        items.push(CompletionItem { text: c.name.clone(), kind: ItemKind::Column, detail: t.name.clone() });
+            }
+        }
+        if context != SqlContext::Tables {
+            // Columns of the tables in the query first, so their names win the dedup.
+            let referenced = referenced_tables(text, schemas);
+            let mut seen_cols = std::collections::HashSet::new();
+            for in_query in [true, false] {
+                let rank = match context {
+                    SqlContext::Columns if in_query => 0,
+                    SqlContext::Columns => 3,
+                    _ => 0,
+                };
+                let listed = !prefix.is_empty() || (context == SqlContext::Columns && in_query);
+                for t in schemas.iter().flat_map(|s| &s.tables).filter(|t| referenced.contains(&t.name.to_lowercase()) == in_query) {
+                    for c in &t.columns {
+                        if listed && matches_prefix(&c.name, prefix) && seen_cols.insert(c.name.to_lowercase()) {
+                            items.push(item(&c.name, ItemKind::Column, t.name.clone(), rank));
+                        }
                     }
                 }
             }
         }
         for kw in sql::KEYWORDS {
             if matches_prefix(kw, prefix) {
-                items.push(CompletionItem { text: kw.to_string(), kind: ItemKind::Keyword, detail: String::new() });
+                items.push(item(kw, ItemKind::Keyword, String::new(), keyword_rank));
             }
         }
     }
     items.sort_by(|a, b| {
         let a_exact = a.text.eq_ignore_ascii_case(prefix);
         let b_exact = b.text.eq_ignore_ascii_case(prefix);
-        b_exact.cmp(&a_exact).then(a.kind.cmp(&b.kind)).then_with(|| a.text.to_lowercase().cmp(&b.text.to_lowercase()))
+        b_exact
+            .cmp(&a_exact)
+            .then(a.rank.cmp(&b.rank))
+            .then(a.kind.cmp(&b.kind))
+            .then_with(|| a.text.to_lowercase().cmp(&b.text.to_lowercase()))
     });
     items.dedup_by(|a, b| a.text == b.text && a.kind == b.kind);
     items.truncate(200);
@@ -2223,6 +2424,7 @@ mod tests {
             key_cols: vec![0],
             binary_cols: vec![false, false],
             has_pk: true,
+            insert_only: false,
         }));
         view.begin_edit(0, 1);
         console.results.push(view);
@@ -2243,6 +2445,7 @@ mod tests {
                         dark: false,
                         font_size: 14.0,
                         columns: None,
+                        auto_complete: true,
                     };
                     for action in state.console.show_table(ui, &cx) {
                         if let ConsoleAction::Submit(0) = action {
@@ -2333,14 +2536,14 @@ mod tests {
         let mut console = Console::new_table(1, 1, Some("shop".into()), "shop".into(), "orders".into());
         let rows = (1..=48).map(|id| vec![Some(id.to_string()), Some(format!("Customer {id:02}")), Some(if id % 3 == 0 { "pending" } else { "paid" }.into()), Some(format!("{}.00", id * 25)), Some("2026-10-23 12:00:00".into()), Some("Delivery instructions\nLeave at reception.".into())]).collect();
         let mut view = ResultView::new(crate::db::ResultSet { columns: columns.iter().map(|c| c.name.clone()).collect(), rows, ..Default::default() }, 42);
-        view.set_edit_target(Ok(crate::ui::editing::EditTarget { schema: "shop".into(), table: "orders".into(), col_names: view.rs.columns.clone(), key_cols: vec![0], binary_cols: vec![false; 6], has_pk: true }));
+        view.set_edit_target(Ok(crate::ui::editing::EditTarget { schema: "shop".into(), table: "orders".into(), col_names: view.rs.columns.clone(), key_cols: vec![0], binary_cols: vec![false; 6], has_pk: true, insert_only: false }));
         view.begin_edit(0, 5); view.finish_inline_edit();
         console.results.push(view);
         console.last_statements.push("SELECT * FROM `shop`.`orders` ORDER BY `id` LIMIT 1000".into());
         let table = console.table.as_mut().unwrap();
         table.loaded = true; table.save_on_row_change = true;
         table.info = Some(Ok(crate::db::object_info::ObjectInfo { rows: Some(48), engine: Some("InnoDB".into()), auto_increment: Some(49), row_format: Some("Dynamic".into()), created: Some("2026-10-01 09:30:00".into()), modified: Some("2026-10-23 12:00:00".into()), data_bytes: Some(16384), index_bytes: Some(16384), collation: Some("utf8mb4_unicode_ci".into()), comment: Some("Customer orders".into()), ..Default::default() }));
-        table.filter_sort.filter.children = vec![Node::Condition(Condition { enabled: true, column: "status".into(), operator: Operator::Equal, value: "paid".into(), second: String::new() }), Node::Condition(Condition { enabled: true, column: "total".into(), operator: Operator::GreaterEqual, value: "100".into(), second: String::new() })];
+        table.filter_sort.filter.children = vec![Node::Condition(Condition { enabled: true, column: "status".into(), operator: Operator::Equal, value: "paid".into(), second: String::new() }).into(), Node::Condition(Condition { enabled: true, column: "total".into(), operator: Operator::GreaterEqual, value: "100".into(), second: String::new() }).into()];
         table.filter_sort.sort.push(SortRule { enabled: true, column: "total".into(), descending: true });
         let schemas = vec![SchemaInfo { name: "shop".into(), tables: ["customers", "orders", "products"].into_iter().map(|name| TableInfo { name: name.into(), kind: ObjectKind::Table, columns: columns.clone() }).collect() }];
         let mut cfg = ConnectionConfig::new(1, Driver::MariaDb); cfg.name = "Development".into(); cfg.database = "shop".into();
@@ -2355,7 +2558,7 @@ mod tests {
             egui::CentralPanel::default().show(ui, |ui| {
                 ui.horizontal(|ui| { ui.label("Objects"); ui.separator(); ui.strong("orders"); });
                 ui.separator();
-                console.show_table(ui, &ConsoleCtx { connections: &connections, schemas: conn.databases[0].schemas.as_deref(), driver: Driver::MariaDb, dark: true, font_size: 14.0, columns: Some(&columns) });
+                console.show_table(ui, &ConsoleCtx { connections: &connections, schemas: conn.databases[0].schemas.as_deref(), driver: Driver::MariaDb, dark: true, font_size: 14.0, columns: Some(&columns), auto_complete: true });
             });
         }, console);
         h.run_steps(4);
@@ -2374,6 +2577,42 @@ mod tests {
         h.render().unwrap().save(dir.join("record-inspector.png")).unwrap();
         h.get_by_label("Column").click(); h.run_steps(4);
         h.render().unwrap().save(dir.join("column-inspector.png")).unwrap();
+    }
+
+    #[test]
+    #[ignore = "Requires a GPU; writes the completion list opened while typing to target/completion-snapshots"]
+    fn render_completion_while_typing() {
+        let connections = vec![ConnSummary { id: 1, name: "Development".into(), driver: Driver::Postgres, status: ConnStatusKind::Connected, databases: vec!["shop".into()], default_db: Some("shop".into()) }];
+        let col = |name: &str, ty: &str| ColumnInfo { name: name.into(), data_type: ty.into(), nullable: true, primary_key: false };
+        let table = |name: &str, kind| TableInfo { name: name.into(), kind, columns: vec![col("id", "integer"), col("fecha", "date"), col("cliente", "text")] };
+        let schemas = vec![SchemaInfo {
+            name: "public".into(),
+            tables: vec![table("Albaranes", ObjectKind::Table), table("Archivos", ObjectKind::Table), table("Articulos", ObjectKind::Table), table("Agenda_semanal", ObjectKind::View), table("Clientes", ObjectKind::Table), table("Facturas", ObjectKind::Table)],
+        }];
+        let (mut first, mut focus) = (true, true);
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(900.0, 420.0)).build_ui_state(move |ui, console: &mut Console| {
+            if std::mem::take(&mut first) { theme::install_fonts(ui.ctx()); theme::apply(ui.ctx(), true); return; }
+            console.show_console(ui, &ConsoleCtx { connections: &connections, schemas: Some(&schemas), driver: Driver::Postgres, dark: true, font_size: 14.0, columns: None, auto_complete: true });
+            if std::mem::take(&mut focus) { ui.memory_mut(|m| m.request_focus(console.editor_id())); }
+        }, Console::new(1, "Query 1".into(), String::new(), Some(1)));
+        h.run_steps(2);
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/completion-snapshots");
+        std::fs::create_dir_all(&dir).unwrap();
+        for c in "select * from A".chars() {
+            h.input_mut().events.push(Event::Text(c.to_string()));
+            h.run_steps(1);
+        }
+        h.run_steps(2);
+        let items: Vec<String> = h.state().completion.as_ref().expect("opened while typing").items.iter().map(|i| i.text.clone()).collect();
+        assert_eq!(items[..4], ["Albaranes", "Archivos", "Articulos", "Agenda_semanal"]);
+        h.render().unwrap().save(dir.join("tables-after-from.png")).unwrap();
+        for c in "lbaranes where f".chars() {
+            h.input_mut().events.push(Event::Text(c.to_string()));
+            h.run_steps(1);
+        }
+        h.run_steps(2);
+        assert_eq!(h.state().completion.as_ref().expect("opened after WHERE").items[0].text, "fecha");
+        h.render().unwrap().save(dir.join("columns-after-where.png")).unwrap();
     }
 
     #[test]
@@ -2408,10 +2647,77 @@ mod tests {
         assert!(resolve_alias("z", "select 1", &s).is_none());
     }
 
+    fn shop() -> Vec<SchemaInfo> {
+        let col = |name: &str| ColumnInfo { name: name.into(), data_type: "TEXT".into(), nullable: true, primary_key: false };
+        let table = |name: &str, cols: &[&str]| TableInfo { name: name.into(), kind: ObjectKind::Table, columns: cols.iter().map(|c| col(c)).collect() };
+        vec![SchemaInfo {
+            name: "main".into(),
+            tables: vec![
+                table("Albaranes", &["numero", "fecha"]),
+                table("Archivos", &["ruta", "nombre"]),
+                table("Clientes", &["nombre", "alta"]),
+            ],
+        }]
+    }
+
+    /// Items for the text where `|` marks the caret, as the editor computes them.
+    fn complete(marked: &str) -> Vec<String> {
+        let cursor = marked.find('|').unwrap();
+        let text = marked.replace('|', "");
+        let before = &text[..cursor];
+        let start = before.rfind(|c: char| !is_ident_char(c)).map(|i| i + 1).unwrap_or(0);
+        let context = sql_context(&scan(&text[..start]));
+        build_items(&text[start..cursor], None, &text, &shop(), context).into_iter().map(|i| i.text).collect()
+    }
+
+    #[test]
+    fn tables_first_after_from() {
+        let items = complete("select * from A|");
+        assert_eq!(items[..2], ["Albaranes", "Archivos"]);
+        assert!(items[2..].iter().all(|i| sql::KEYWORDS.contains(&i.as_str())));
+        assert_eq!(complete("SELECT * FROM Clientes c JOIN A|")[..2], ["Albaranes", "Archivos"]);
+        assert_eq!(complete("select * from Clientes, a|")[..2], ["Albaranes", "Archivos"]);
+        // No columns where a table goes.
+        assert!(!complete("update n|").contains(&"nombre".to_string()));
+    }
+
+    #[test]
+    fn query_columns_first_after_select_and_where() {
+        // Columns of Clientes (in the query) before the other tables' columns.
+        let items = complete("select | from Clientes");
+        assert_eq!(items[..5], ["alta", "nombre", "Albaranes", "Archivos", "Clientes"]);
+        assert!(!items.contains(&"ruta".to_string()));
+        let items = complete("select * from Archivos where r|");
+        assert_eq!(items[0], "ruta");
+        let items = complete("select * from Albaranes where f|");
+        assert_eq!(items[0], "fecha");
+    }
+
+    #[test]
+    fn opens_by_itself_only_where_a_name_goes() {
+        let at = |marked: &str| auto_trigger(&marked.replace('|', ""), marked.find('|').unwrap());
+        assert!(at("select * from A|"));
+        assert!(at("s|"));
+        assert!(at("select a, b|"));
+        assert!(at("select * from t where x = y|"));
+        // After a table name (an alias goes there), AS, a dot, digits, inside words.
+        assert!(!at("select * from Clientes c|"));
+        assert!(!at("select count(*) as t|"));
+        assert!(!at("select c.n|"));
+        assert!(!at("select 1|"));
+        assert!(!at("select * from A|rchivos"));
+        // Strings and comments.
+        assert!(!at("select 'A|"));
+        assert!(!at("-- from A|"));
+        assert!(!at("/* from A|"));
+        assert!(at("/* note */ select * from A|"));
+        assert!(at("select 'x', A|"));
+    }
+
     #[test]
     fn column_items_after_dot() {
         let s = schemas();
-        let items = build_items("em", Some("users"), "", &s);
+        let items = build_items("em", Some("users"), "", &s, SqlContext::Any);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].text, "email");
     }
@@ -2462,6 +2768,11 @@ mod tests {
         // Empty text / blank line.
         assert_eq!(run(t, "|"), "-- |");
         assert_eq!(run(t, "a\n|\nb"), "a\n-- \nb|");
+        // KQL: `//`, and `--` is not a comment there.
+        let k = toggle_slash_comment;
+        assert_eq!(run(k, "[T\n  take 1]"), "[// T\n//   take 1]");
+        assert_eq!(run(k, "[// T\n  //take 1]"), "[T\n  take 1]");
+        assert_eq!(run(k, "-- x|"), "// -- x|");
     }
 
     #[test]

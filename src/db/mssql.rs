@@ -36,7 +36,9 @@ impl MsSession {
         let port = if cfg.port == 0 { 1433 } else { cfg.port };
 
         let mut config = Config::new();
-        config.host(host);
+        // Through an SSH tunnel the TCP connection goes to its listener, and TLS checks the
+        // certificate against the database's own host.
+        config.host(cfg.tunnel_host.as_deref().unwrap_or(host));
         config.port(port);
         if !cfg.database.trim().is_empty() {
             config.database(cfg.database.trim());
@@ -49,7 +51,7 @@ impl MsSession {
             config.trust_cert();
         }
 
-        let tcp = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(config.get_addr()))
+        let tcp = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect((host, port)))
             .await
             .map_err(|_| anyhow!(trf("Timed out connecting to {host}:{port}", &[("host", &host), ("port", &port)])))?
             .with_context(|| trf("Could not connect to {host}:{port}", &[("host", &host), ("port", &port)]))?;

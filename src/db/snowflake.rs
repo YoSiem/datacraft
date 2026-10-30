@@ -275,7 +275,7 @@ impl Inner {
     }
 }
 
-fn http_error(e: reqwest::Error) -> anyhow::Error {
+pub(crate) fn http_error(e: reqwest::Error) -> anyhow::Error {
     let mut msg = e.to_string();
     let mut src = std::error::Error::source(&e);
     while let Some(s) = src {

@@ -235,6 +235,8 @@ struct Persisted {
     islands_dark: bool,
     font_size: f32,
     max_rows: usize,
+    /// Completion list opens while typing in the console.
+    auto_complete: bool,
     consoles: Vec<PersistedConsole>,
     active: usize,
     console_counter: u64,
@@ -246,6 +248,10 @@ struct Persisted {
     lang: Option<Lang>,
     render_mode: crate::ui::performance::RenderMode,
     show_frame_stats: bool,
+    /// Look for a newer release on GitHub a little after launch.
+    check_updates: bool,
+    /// "Skip this version": no notice until a newer one.
+    skipped_version: Option<String>,
 }
 
 impl Default for Persisted {
@@ -258,6 +264,7 @@ impl Default for Persisted {
             islands_dark: false,
             font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000,
+            auto_complete: true,
             consoles: Vec::new(),
             active: 0,
             console_counter: 0,
@@ -267,6 +274,8 @@ impl Default for Persisted {
             lang: None,
             render_mode: Default::default(),
             show_frame_stats: false,
+            check_updates: true,
+            skipped_version: None,
         }
     }
 }
@@ -286,6 +295,10 @@ pub struct DataCraftApp {
     save_on_row_change: bool,
     dialog: Option<ConnectionDialog>,
     confirm_delete: Option<ConnId>,
+    /// "Explain Analyze" of a statement that writes, waiting for confirmation: (console, explain).
+    confirm_analyze: Option<(usize, String)>,
+    /// A connection imported without its password, and the password being typed.
+    ask_password: Option<(ConnId, String)>,
     /// "New Database" / "New Table" dialog.
     create: Option<CreateDialog>,
     /// Confirmation to drop a database, table or view.
@@ -304,6 +317,13 @@ pub struct DataCraftApp {
     renaming: Option<(u64, String)>,
     show_about: bool,
     show_settings: bool,
+    script: Option<crate::ui::script_dialog::ScriptDialog>,
+    check_updates: bool,
+    skipped_version: Option<String>,
+    /// The update check under way, and whether it was asked for ("Check for Updates…").
+    update_check: Option<(std::sync::mpsc::Receiver<Result<crate::update::Release, String>>, bool)>,
+    /// A newer release, shown in the corner until skipped or dismissed.
+    update: Option<crate::update::Release>,
     /// Native macOS menu bar (None if it could not be installed).
     native_menu: Option<crate::native_menu::NativeMenu>,
     show_explorer: bool,
@@ -312,6 +332,7 @@ pub struct DataCraftApp {
     applied_dark: Option<bool>,
     font_size: f32,
     max_rows: usize,
+    auto_complete: bool,
     status_msg: Option<(String, bool)>,
     /// Last connection id handed out (so ids are monotonic).
     last_conn_id: u64,
@@ -376,6 +397,8 @@ impl DataCraftApp {
             save_on_row_change: persisted.save_on_row_change,
             dialog: None,
             confirm_delete: None,
+            confirm_analyze: None,
+            ask_password: None,
             create: None,
             drop: None,
             views: Default::default(),
@@ -387,6 +410,11 @@ impl DataCraftApp {
             renaming: None,
             show_about: false,
             show_settings: false,
+            script: None,
+            check_updates: persisted.check_updates,
+            skipped_version: persisted.skipped_version,
+            update_check: None,
+            update: None,
             native_menu: crate::native_menu::NativeMenu::install(&cc.egui_ctx),
             show_explorer: persisted.show_explorer,
             show_results: persisted.show_results,
@@ -394,6 +422,7 @@ impl DataCraftApp {
             applied_dark: None,
             font_size: persisted.font_size.clamp(8.0, 32.0),
             max_rows: persisted.max_rows.max(1),
+            auto_complete: persisted.auto_complete,
             status_msg: None,
             last_conn_id,
             demo_pending: false,
@@ -408,6 +437,9 @@ impl DataCraftApp {
             perf: crate::ui::performance::Performance::new(cc.wgpu_render_state.as_ref(), persisted.render_mode, persisted.show_frame_stats),
         };
         app.restore_tabs(persisted.consoles, persisted.active);
+        if app.check_updates && demo.is_none() {
+            app.update_check = Some((crate::update::check(cc.egui_ctx.clone(), std::time::Duration::from_secs(5)), false));
+        }
         if let Some(path) = demo {
             app.start_demo(&path);
         }
@@ -576,6 +608,10 @@ impl DataCraftApp {
     // ---------------------------------------------------------------- connection
 
     fn connect(&mut self, id: ConnId) {
+        if self.conn(id).is_some_and(|c| c.cfg.ask_password && c.cfg.password.is_empty()) {
+            self.ask_password = Some((id, String::new()));
+            return;
+        }
         if let Some(c) = self.conn_mut(id) {
             if matches!(c.status, ConnStatus::Connecting) {
                 return;
@@ -898,10 +934,15 @@ impl DataCraftApp {
             }
             let read_only = c.conn.and_then(|id| self.conn(id)).is_some_and(|cs| cs.cfg.read_only);
             let driver = c.conn.and_then(|id| self.conn(id)).map(|cs| cs.cfg.driver);
+            // ClickHouse: existing rows are read-only (mutations), but inserts still work.
+            let insert_only = driver == Some(Driver::ClickHouse);
             let nosql = driver.is_some_and(|d| d.is_nosql());
             let target = match (c.conn, &c.table) {
                 (None, _) => Err(tr("No connection").to_string()),
                 _ if read_only => Err(tr("Read-only connection").to_string()),
+                // Points are written with line protocol, which the data editor doesn't produce, and
+                // Kusto ingests rows rather than editing them.
+                _ if matches!(driver, Some(Driver::InfluxDb | Driver::Kusto)) => Err(tr("Editing is not available for this engine").to_string()),
                 // Redis and MongoDB: only a key group or a collection opened in the data editor.
                 (Some(_), None) if nosql => Err(tr("Only data opened from the explorer can be edited on this engine").to_string()),
                 (Some(conn), Some(t)) => match self.table_info(conn, c.db.as_deref(), &t.schema, &t.table) {
@@ -916,7 +957,7 @@ impl DataCraftApp {
                     None => Err(tr("Database schema not loaded yet").to_string()),
                 },
             };
-            targets.push((i, target));
+            targets.push((i, target.map(|t| crate::ui::editing::EditTarget { insert_only, ..t })));
         }
         let c = &mut self.consoles[idx];
         for (i, t) in targets {
@@ -1432,12 +1473,13 @@ impl DataCraftApp {
                 | ExplorerAction::EditView(t) => Some(t.conn),
                 _ => None,
             };
-            // Copying works with MongoDB collections too, but not with Redis keys.
-            let redis = match &a {
-                ExplorerAction::CopyTable(t) => self.conn(t.conn).is_some_and(|c| c.cfg.driver == Driver::Redis),
+            // Copying works with MongoDB collections too, but not with Redis keys, InfluxDB
+            // measurements nor Kusto tables.
+            let not_copyable = match &a {
+                ExplorerAction::CopyTable(t) => self.conn(t.conn).is_some_and(|c| !c.cfg.driver.can_copy()),
                 _ => false,
             };
-            if redis || sql_only.and_then(|id| self.conn(id)).is_some_and(|c| c.cfg.driver.is_nosql()) {
+            if not_copyable || sql_only.and_then(|id| self.conn(id)).is_some_and(|c| c.cfg.driver.is_nosql()) {
                 self.error(tr("Not available for this engine").to_string());
                 continue;
             }
@@ -1449,6 +1491,7 @@ impl DataCraftApp {
                         self.backup = Some(dialog);
                     }
                 }
+                ExplorerAction::RunScript(conn, db) => self.run_script(conn, db),
                 ExplorerAction::NewConnection => self.open_new_connection_dialog(),
                 ExplorerAction::Connect(id) => self.connect(id),
                 ExplorerAction::Disconnect(id) => self.disconnect(id),
@@ -1593,6 +1636,22 @@ impl DataCraftApp {
     }
 
     /// true (and reports it) if the connection is read-only.
+    /// "Run SQL Script…": the files picked run on a connection of their own, without opening them.
+    fn run_script(&mut self, conn: ConnId, db: Option<String>) {
+        if self.refuse_read_only(conn) {
+            return;
+        }
+        let Some(c) = self.conn(conn).filter(|c| c.status == ConnStatus::Connected) else { return };
+        let target = match &db {
+            Some(db) => format!("{} / {db}", c.cfg.name),
+            None => c.cfg.name.clone(),
+        };
+        let Some(files) = rfd::FileDialog::new().set_title(tr("Run SQL Script")).add_filter("SQL", &["sql"]).add_filter(tr("All files"), &["*"]).pick_files() else { return };
+        let run = std::sync::Arc::new(crate::db::script::ScriptRun::default());
+        self.worker.send(Request::RunScript { conn, db, files: files.clone(), run: run.clone() });
+        self.script = Some(crate::ui::script_dialog::ScriptDialog { conn, target, files, run });
+    }
+
     fn refuse_read_only(&mut self, conn: ConnId) -> bool {
         let ro = self.conn(conn).is_some_and(|c| c.cfg.read_only);
         if ro {
@@ -2347,8 +2406,9 @@ impl DataCraftApp {
 
     /// A modal dialog is open: shortcuts and run commands are ignored.
     fn modal_open(&self) -> bool {
-        self.backup.is_some() || self.object_browser.schema_search.open || self.object_browser.has_dialog() || self.dialog.is_some()
+        self.backup.is_some() || self.script.is_some() || self.object_browser.schema_search.open || self.object_browser.has_dialog() || self.dialog.is_some()
             || self.confirm_delete.is_some()
+            || self.confirm_analyze.is_some()
             || self.create.is_some()
             || self.views.dialog.is_some()
             || self.drop.is_some()
@@ -2389,6 +2449,7 @@ impl DataCraftApp {
             let modal = self.modal_open();
             match cmd {
                 M::About => self.show_about = true,
+                M::CheckUpdates => self.check_for_updates(ctx),
                 M::Settings => self.show_settings = true,
                 M::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
                 M::NewConnection if !modal => self.open_new_connection_dialog(),
@@ -2470,6 +2531,10 @@ impl DataCraftApp {
         });
         ui.menu_button(tr("View"), |ui| self.view_menu(ui));
         ui.menu_button(tr("Help"), |ui| {
+            if ui.button(tr("Check for Updates…")).clicked() {
+                self.check_for_updates(ui.ctx());
+                ui.close();
+            }
             if ui.button(tr("About DataCraft")).clicked() {
                 self.show_about = true;
                 ui.close();
@@ -3088,6 +3153,7 @@ impl DataCraftApp {
                             dark: self.dark,
                             font_size: self.font_size,
                             columns: None,
+                            auto_complete: self.auto_complete,
                         };
                         actions.extend(self.consoles[idx].show_results(ui, &cx));
                     });
@@ -3132,6 +3198,7 @@ impl DataCraftApp {
                 dark: self.dark,
                 font_size: self.font_size,
                 columns,
+                auto_complete: self.auto_complete,
             };
             let console = &mut self.consoles[idx];
             let out = if console.table.is_some() { console.show_table(ui, &cx) } else { console.show_console(ui, &cx) };
@@ -3154,6 +3221,16 @@ impl DataCraftApp {
                 ConsoleAction::Cancel => {
                     let console = self.consoles[idx].id;
                     self.worker.send(Request::Cancel { console });
+                }
+                ConsoleAction::ExplainAnalyze { statement, explain } => {
+                    let id = self.consoles[idx].id;
+                    if self.consoles[idx].table.is_none() && !self.consoles[idx].is_busy() && self.guard(Discard::Run(id, false)) {
+                        if is_query(&statement) {
+                            self.run_statements(idx, vec![explain]);
+                        } else {
+                            self.confirm_analyze = Some((idx, explain));
+                        }
+                    }
                 }
                 ConsoleAction::RunStatements(statements) => {
                     let id = self.consoles[idx].id;
@@ -3192,6 +3269,16 @@ impl DataCraftApp {
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
+        if let Some(d) = self.script.as_mut()
+            && let Some(ran) = d.show(ctx)
+        {
+            let conn = d.conn;
+            self.script = None;
+            if ran {
+                self.worker.send(Request::Refresh(conn));
+            }
+        }
+        self.update_notice(ctx);
         if let Some(dialog) = self.backup.as_mut() {
             match dialog.show(ctx, &self.explorer.backups) {
                 Some(crate::ui::backup_dialog::BackupAction::Start(request)) => self.worker.send(Request::Backup { conn: dialog.conn, id: dialog.id, request: Box::new(request), cancel: dialog.cancel.clone() }),
@@ -3345,6 +3432,86 @@ impl DataCraftApp {
             }
         }
 
+        if let Some((id, password)) = self.ask_password.as_mut() {
+            let id = *id;
+            let name = self.conns.iter().find(|c| c.cfg.id == id).map(|c| c.cfg.name.clone()).unwrap_or_default();
+            let mut decision = None;
+            egui::Modal::new(egui::Id::new("ask_password")).frame(frame).show(ctx, |ui| {
+                ui.set_width(380.0);
+                ui.label(RichText::new(tr("Password")).font(theme::bold(15.0)));
+                ui.add_space(8.0);
+                ui.label(trf("“{name}” was imported without its password. It is kept in the system keychain.", &[("name", &name)]));
+                ui.add_space(10.0);
+                let edit = ui.add(egui::TextEdit::singleline(password).password(true).margin(egui::vec2(8.0, 5.0)).desired_width(f32::INFINITY));
+                if !edit.has_focus() && !edit.lost_focus() {
+                    edit.request_focus();
+                }
+                if edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    decision = Some(true);
+                }
+                ui.add_space(16.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if theme::primary_button(ui, tr("Connect")).clicked() {
+                        decision = Some(true);
+                    }
+                    if theme::secondary_button(ui, tr("Cancel")).clicked() {
+                        decision = Some(false);
+                    }
+                });
+            });
+            if ctx.input(|i| i.key_pressed(Key::Escape)) {
+                decision = Some(false);
+            }
+            match decision {
+                Some(true) => {
+                    let password = self.ask_password.take().map(|(_, p)| p).unwrap_or_default();
+                    if let Some(c) = self.conn_mut(id) {
+                        c.cfg.password = password;
+                        c.cfg.ask_password = false;
+                        config::store_secrets(&c.cfg);
+                    }
+                    self.persist_connections();
+                    self.connect(id);
+                }
+                Some(false) => self.ask_password = None,
+                None => {}
+            }
+        }
+
+        if let Some((idx, explain)) = self.confirm_analyze.clone() {
+            let mut decision = None;
+            egui::Modal::new(egui::Id::new("confirm_analyze")).frame(frame).show(ctx, |ui| {
+                ui.set_width(400.0);
+                ui.label(RichText::new(tr("Explain Analyze")).font(theme::bold(15.0)));
+                ui.add_space(8.0);
+                ui.label(tr("Explain Analyze runs the statement to measure it, and this one changes data or structure. Run it anyway?"));
+                ui.add_space(16.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if theme::primary_button(ui, tr("Run")).clicked() {
+                        decision = Some(true);
+                    }
+                    if theme::secondary_button(ui, tr("Cancel")).clicked() {
+                        decision = Some(false);
+                    }
+                });
+            });
+            if ctx.input(|i| i.key_pressed(Key::Escape)) {
+                decision = Some(false);
+            }
+            match decision {
+                Some(true) => {
+                    self.confirm_analyze = None;
+                    if idx < self.consoles.len() && !self.consoles[idx].is_busy() {
+                        self.run_statements(idx, vec![explain]);
+                    }
+                }
+                Some(false) => self.confirm_analyze = None,
+                None => {}
+            }
+        }
+
         if let Some(action) = self.confirm_discard {
             let mut decision = None;
             egui::Modal::new(egui::Id::new("confirm_discard")).frame(frame).show(ctx, |ui| {
@@ -3393,7 +3560,8 @@ impl DataCraftApp {
                     ui.label(RichText::new("DataCraft").font(theme::bold(17.0)));
                     ui.label(RichText::new(trf("Version {version}", &[("version", &env!("CARGO_PKG_VERSION"))])).color(p.muted));
                     ui.add_space(8.0);
-                    ui.label(tr("Lightweight SQL client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle and SQLite."));
+                    ui.label(tr("Lightweight database client for PostgreSQL, MySQL, MariaDB, SQL Server, Oracle, SQLite, Snowflake, ClickHouse, Redis, MongoDB, InfluxDB and Kusto."));
+                    ui.label(RichText::new("macOS · Windows · Linux").small().color(p.muted));
                     ui.label(RichText::new(tr("Made with Rust, egui and tokio")).small().color(p.muted));
                     ui.add_space(14.0);
                     theme::primary_button(ui, tr("Close")).clicked()
@@ -3415,6 +3583,8 @@ impl DataCraftApp {
                     ui.label(tr("Max rows per query:"));
                     ui.add(egui::DragValue::new(&mut self.max_rows).range(1..=1_000_000).speed(10));
                 });
+                ui.checkbox(&mut self.auto_complete, tr("Show completions while typing"));
+                ui.checkbox(&mut self.check_updates, tr("Check for updates at startup"));
                 ui.separator();
                 self.perf.settings_ui(ui);
                 ui.add_space(12.0);
@@ -3429,6 +3599,70 @@ impl DataCraftApp {
 }
 
 impl DataCraftApp {
+    /// "Check for Updates…": the result is shown even for a skipped version, and when up to date.
+    fn check_for_updates(&mut self, ctx: &egui::Context) {
+        self.info(tr("Checking for updates…"));
+        self.update_check = Some((crate::update::check(ctx.clone(), std::time::Duration::ZERO), true));
+    }
+
+    /// The update check's result, and the notice of a newer release in the bottom-right corner.
+    fn update_notice(&mut self, ctx: &egui::Context) {
+        if let Some((rx, asked)) = &self.update_check
+            && let Ok(result) = rx.try_recv()
+        {
+            let asked = *asked;
+            self.update_check = None;
+            match result {
+                Ok(r) if crate::update::is_newer(&r.version) => {
+                    if asked || self.skipped_version.as_deref() != Some(r.version.as_str()) {
+                        self.update = Some(r);
+                    }
+                    if asked {
+                        self.status_msg = None;
+                    }
+                }
+                Ok(_) if asked => self.info(trf("DataCraft {version} is up to date", &[("version", &env!("CARGO_PKG_VERSION"))])),
+                Err(e) if asked => self.error(trf("Could not check for updates: {error}", &[("error", &e)])),
+                _ => {}
+            }
+        }
+        // Not over a dialog: it comes back when the dialog closes.
+        let Some(release) = self.update.clone().filter(|_| !self.modal_open()) else { return };
+        let p = palette(self.dark);
+        let mut close = false;
+        egui::Area::new(egui::Id::new("update_notice")).anchor(egui::Align2::RIGHT_BOTTOM, vec2(-16.0, -40.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).fill(p.popup_bg).corner_radius(10).inner_margin(Margin::same(14)).stroke(egui::Stroke::new(1.0, p.popup_border)).show(ui, |ui| {
+                ui.set_width(300.0);
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::hover());
+                    crate::ui::branding::paint(ui, r);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new(trf("DataCraft {version} is available", &[("version", &release.version)])).strong());
+                        ui.label(RichText::new(trf("You have {version}. Download it from the release page.", &[("version", &env!("CARGO_PKG_VERSION"))])).size(12.0).color(p.muted));
+                    });
+                });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if theme::primary_button(ui, tr("View Release")).clicked() {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(&release.url));
+                        close = true;
+                    }
+                    if theme::secondary_button(ui, tr("Skip This Version")).clicked() {
+                        self.skipped_version = Some(release.version.clone());
+                        close = true;
+                    }
+                    if theme::secondary_button(ui, tr("Later")).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        });
+        if close {
+            self.update = None;
+        }
+    }
+
     /// "Preview pending changes" modal window.
     fn preview_dialog(&mut self, ctx: &egui::Context, frame: egui::Frame) {
         let Some(pv) = self.preview.as_ref().filter(|p| p.visible) else { return };
@@ -3576,11 +3810,14 @@ fn demo_server_config(id: u64, url: &str) -> Option<ConnectionConfig> {
     Some(cfg)
 }
 
-/// true if a statement only reads, in the engine's own language (SQL, Redis or `mongosh`).
+/// true if a statement only reads, in the engine's own language (SQL, Redis, `mongosh`, Flux,
+/// InfluxQL or KQL).
 fn is_read_statement(driver: Driver, statement: &str) -> bool {
     match driver {
         Driver::Redis => crate::db::redis_db::is_read_command(statement),
         Driver::MongoDb => crate::db::mongo::is_read_command(statement),
+        Driver::InfluxDb => crate::db::influx::is_read_command(statement),
+        Driver::Kusto => crate::db::kusto::is_read_command(statement),
         _ => is_query(statement),
     }
 }
@@ -3634,6 +3871,10 @@ pub fn table_query(driver: Driver, schema: &str, table: &str, where_clause: &str
             let sort = if o.is_empty() { String::new() } else { format!(".sort({})", braces(o)) };
             return format!("db.getCollection({name}).find({}){sort}.limit({max_rows})", braces(w));
         }
+        // The filter row holds a Flux predicate on `r` and the time range.
+        Driver::InfluxDb => return crate::db::influx::table_query(schema, table, w, o, max_rows),
+        // A KQL predicate and sort (`State == "TEXAS"`, `StartTime desc`).
+        Driver::Kusto => return crate::db::kusto::table_query(table, w, o, max_rows),
         _ => {}
     }
     let t = Session::quote_table(driver, schema, table);
@@ -3897,6 +4138,7 @@ impl eframe::App for DataCraftApp {
             islands_dark: self.dark,
             font_size: self.font_size,
             max_rows: self.max_rows,
+            auto_complete: self.auto_complete,
             consoles: self
                 .consoles
                 .iter()
@@ -3917,6 +4159,8 @@ impl eframe::App for DataCraftApp {
             lang: self.lang,
             render_mode: self.perf.mode,
             show_frame_stats: self.perf.show_stats,
+            check_updates: self.check_updates,
+            skipped_version: self.skipped_version.clone(),
         };
         eframe::set_value(storage, STORAGE_KEY, &state);
     }
@@ -3937,10 +4181,10 @@ mod tests {
             active: 1, next_console_id: 5, console_counter: 4, result_salt: 0,
             explorer: ExplorerState::default(), backup: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(),
             save_on_row_change: false,
-            dialog: None, confirm_delete: None, create: None, drop: None, views: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
-            show_about: false, show_settings: false, native_menu: None, show_explorer: true,
+            dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
+            show_about: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
-            max_rows: 1000, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
+            max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
             zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None,
             demo_explorer_w: None, demo_window: None, lang: None,
             perf: crate::ui::performance::Performance::new(None, Default::default(), false),
@@ -3991,7 +4235,7 @@ mod tests {
         let index = app.active;
         let id = app.consoles[index].id;
         let mut result = ResultView::new(crate::db::ResultSet { columns: vec!["id".into()], rows: vec![vec![Some("1".into())]], ..Default::default() }, 991);
-        result.set_edit_target(Ok(crate::ui::editing::EditTarget { schema: "public".into(), table: "notes".into(), col_names: vec!["id".into()], key_cols: vec![0], binary_cols: vec![false], has_pk: true }));
+        result.set_edit_target(Ok(crate::ui::editing::EditTarget { schema: "public".into(), table: "notes".into(), col_names: vec!["id".into()], key_cols: vec![0], binary_cols: vec![false], has_pk: true, insert_only: false }));
         result.edit.as_mut().unwrap().state.set_value(&result.rs, crate::ui::editing::RowRef::Existing(0), 0, Some("2".into()));
         app.consoles[index].results.push(result);
         app.consoles[index].table.as_mut().unwrap().filter_sort.pending = Some(("id > 10".into(), "id DESC".into()));
@@ -4045,7 +4289,7 @@ mod tests {
         use crate::ui::editing::{EditTarget, RowRef};
         let mut app = tabs_app();
         let mut view = ResultView::new(ResultSet { columns: vec!["note".into()], rows: vec![vec![Some("before".into())]], ..Default::default() }, 1);
-        view.set_edit_target(Ok(EditTarget { schema: "main".into(), table: "notes".into(), col_names: vec!["note".into()], key_cols: vec![0], binary_cols: vec![false], has_pk: false }));
+        view.set_edit_target(Ok(EditTarget { schema: "main".into(), table: "notes".into(), col_names: vec!["note".into()], key_cols: vec![0], binary_cols: vec![false], has_pk: false, insert_only: false }));
         view.edit.as_mut().unwrap().state.set_value(&view.rs, RowRef::Existing(0), 0, Some("after".into()));
         app.consoles[3].results.push(view);
         let action = Discard::CloseTabs(2, CloseResults::Right(1));
@@ -4079,6 +4323,29 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/navigation-snapshots");
         std::fs::create_dir_all(&dir).unwrap();
         h.render().unwrap().save(dir.join("tab-menu.png")).unwrap();
+    }
+
+    #[test]
+    #[ignore = "Requires a GPU; renders the notice of a newer release"]
+    fn render_update_notice() {
+        use egui_kittest::kittest::Queryable;
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/branding-snapshots");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = tabs_app();
+        app.update = Some(crate::update::Release { version: "9.0.0".into(), url: "https://github.com/javy-fernandez/datacraft/releases/tag/v9.0.0".into() });
+        let mut first = true;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(900.0, 620.0)).build_ui_state(move |ui, app: &mut DataCraftApp| {
+            if std::mem::take(&mut first) { theme::install_fonts(ui.ctx()); theme::apply(ui.ctx(), true); return; }
+            egui::CentralPanel::default().show(ui, |ui| { app.editor_tabs(ui); });
+            app.dialogs(ui.ctx());
+        }, app);
+        h.run_steps(4);
+        h.render().unwrap().save(dir.join("update-notice.png")).unwrap();
+        // "Skip This Version" remembers it and hides the notice.
+        h.get_by_label(tr("Skip This Version")).click();
+        h.run_steps(2);
+        assert!(h.state().update.is_none());
+        assert_eq!(h.state().skipped_version.as_deref(), Some("9.0.0"));
     }
 
     #[test]

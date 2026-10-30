@@ -18,6 +18,7 @@ Ctrl for the combinations below.
 | Shift+Arrow | Extend a rectangular cell selection |
 | Shift+click | Select the cell rectangle from the anchor |
 | Ctrl+click | Add or remove individual cells from the selection |
+| Alt+click (⌥-click on macOS) | Show the cell's whole value in a popup below it (JSON indented); Esc or a click outside closes it. Double-clicking a cell that can't be edited, or View Value in the context menu, does the same |
 | Drag with the mouse | Select a cell rectangle; dragging near an edge scrolls the grid |
 | Click a column name | Select that entire column in the loaded, filtered grid |
 | Ctrl+click a column name | Add or remove a column from the selection |
