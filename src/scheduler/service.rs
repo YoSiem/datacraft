@@ -200,6 +200,110 @@ mod tests {
         assert!(launchd_plist("/bad\0path").is_err());
     }
 
+    /// Runs only in an isolated GitHub-hosted runner with its user service manager configured.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    #[ignore = "requires a disposable CI user session and its native service manager"]
+    fn native_service_runs_sql_without_the_gui() {
+        use crate::db::{AuthMode, ConnectionConfig, Driver};
+        use crate::scheduler::{Job, Store, now};
+
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+        let profile =
+            std::path::PathBuf::from(std::env::var_os("DATACRAFT_TEST_DATA_DIR").unwrap());
+        let runner_temp = std::path::PathBuf::from(std::env::var_os("RUNNER_TEMP").unwrap());
+        std::fs::create_dir_all(&profile).unwrap();
+        assert!(
+            profile
+                .canonicalize()
+                .unwrap()
+                .starts_with(runner_temp.canonicalize().unwrap())
+        );
+
+        struct Cleanup;
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                #[cfg(target_os = "linux")]
+                {
+                    let _ = command(
+                        "systemctl",
+                        &["--user", "disable", "--now", "datacraft-scheduler.service"],
+                    );
+                    if let Some(dir) = dirs::config_dir() {
+                        let _ = std::fs::remove_file(
+                            dir.join("systemd/user/datacraft-scheduler.service"),
+                        );
+                    }
+                    let _ = command("systemctl", &["--user", "daemon-reload"]);
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    if let Ok(uid) = Command::new("id").arg("-u").output() {
+                        let label = format!(
+                            "gui/{}/com.datacraft.scheduler",
+                            String::from_utf8_lossy(&uid.stdout).trim()
+                        );
+                        let _ = command("launchctl", &["bootout", &label]);
+                    }
+                    if let Some(dir) = dirs::home_dir() {
+                        let _ = std::fs::remove_file(
+                            dir.join("Library/LaunchAgents/com.datacraft.scheduler.plist"),
+                        );
+                    }
+                }
+            }
+        }
+        let _cleanup = Cleanup;
+        let database = profile.join("sample.sqlite");
+        let sample = rusqlite::Connection::open(&database).unwrap();
+        sample
+            .execute_batch("CREATE TABLE probe(value INTEGER); INSERT INTO probe VALUES(0);")
+            .unwrap();
+        let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
+        cfg.auth = AuthMode::NoAuth;
+        cfg.file_path = database.to_string_lossy().into_owned();
+        std::fs::write(
+            profile.join("connections.json"),
+            serde_json::to_string(&vec![cfg]).unwrap(),
+        )
+        .unwrap();
+        let mut store = Store::open(&profile.join("scheduler.sqlite")).unwrap();
+        let job = Job {
+            id: 0,
+            name: "native service test".into(),
+            connection: 1,
+            database: "main".into(),
+            sql: "UPDATE probe SET value = value + 1".into(),
+            interval_seconds: 30,
+            enabled: true,
+            next_run: 0,
+        };
+        let id = store.save(&job, now() - 30).unwrap();
+        let executable =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug/datacraft");
+        install(&executable).unwrap();
+        wait_for_start().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let runs = store.runs(id).unwrap();
+            if let Some(run) = runs.first().filter(|run| run.status != "running") {
+                assert_eq!(run.status, "succeeded", "{}", run.message);
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "service did not finish the task"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert_eq!(
+            sample
+                .query_row("SELECT value FROM probe", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn windows_autostart_value_quotes_the_executable_path() {

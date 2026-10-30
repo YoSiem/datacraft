@@ -43,5 +43,27 @@ jobs:
         run: "cargo test --locked scheduler::"
       - if: runner.os != 'Windows'
         run: python3 tests/scheduler-background.py target/debug/datacraft
+      - name: Exercise the Linux user service
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -e
+          export DATACRAFT_TEST_DATA_DIR="$RUNNER_TEMP/datacraft-service"
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          sudo loginctl enable-linger "$(id -u)"
+          sudo systemctl start "user@$(id -u).service"
+          systemctl --user set-environment "DATACRAFT_TEST_DATA_DIR=$DATACRAFT_TEST_DATA_DIR"
+          trap 'systemctl --user unset-environment DATACRAFT_TEST_DATA_DIR' EXIT
+          cargo test --locked scheduler::service::tests::native_service_runs_sql_without_the_gui -- --ignored --exact
+      - name: Exercise the macOS LaunchAgent
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -e
+          export DATACRAFT_TEST_DATA_DIR="$RUNNER_TEMP/datacraft-service"
+          launchctl setenv DATACRAFT_TEST_DATA_DIR "$DATACRAFT_TEST_DATA_DIR"
+          trap 'launchctl unsetenv DATACRAFT_TEST_DATA_DIR' EXIT
+          cargo test --locked scheduler::service::tests::native_service_runs_sql_without_the_gui -- --ignored --exact
       - if: runner.os == 'Windows'
         run: python tests/scheduler-background.py target/debug/datacraft.exe
