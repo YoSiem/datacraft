@@ -1,0 +1,43 @@
+name: SQL scheduler
+
+on:
+  push:
+    paths:
+      - "src/scheduler.rs"
+      - "src/scheduler/**"
+      - "src/config.rs"
+      - "tests/scheduler-background.py"
+      - ".github/workflows/scheduler.yml"
+  pull_request:
+    paths:
+      - "src/scheduler.rs"
+      - "src/scheduler/**"
+      - "src/config.rs"
+      - "tests/scheduler-background.py"
+      - ".github/workflows/scheduler.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  background:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libsqlite3-dev libdbus-1-dev
+      - run: rustup toolchain install stable --profile minimal
+      - run: rustup default stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked
+      - if: runner.os != 'Windows'
+        run: cargo test --locked scheduler::
+      - if: runner.os != 'Windows'
+        run: python3 tests/scheduler-background.py target/debug/datacraft
+      - if: runner.os == 'Windows'
+        run: python tests/scheduler-background.py target/debug/datacraft.exe

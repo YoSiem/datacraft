@@ -8,6 +8,10 @@ use std::path::PathBuf;
 const KEYCHAIN_SERVICE: &str = "DataCraft";
 
 pub(crate) fn data_dir() -> PathBuf {
+    #[cfg(debug_assertions)]
+    if let Some(path) = std::env::var_os("DATACRAFT_TEST_DATA_DIR") {
+        return PathBuf::from(path);
+    }
     dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("DataCraft")
 }
 
@@ -89,6 +93,42 @@ fn fill_secret_properties(c: &mut ConnectionConfig, secrets: &std::collections::
             *v = secret.clone();
         }
     }
+}
+
+/// Loads only the requested data source for a background job, without prompting the
+/// credential store for every other connection or rewriting their configuration.
+pub fn load_background_connection(id: u64) -> anyhow::Result<ConnectionConfig> {
+    use anyhow::Context;
+    let text = std::fs::read_to_string(connections_file()).context("read saved data sources")?;
+    let list: Vec<ConnectionConfig> = serde_json::from_str(&text).context("parse saved data sources")?;
+    let mut cfg = list.into_iter().find(|cfg| cfg.id == id).context("The data source no longer exists")?;
+    cfg.migrate();
+    if !cfg.secret_properties().is_empty() {
+        anyhow::bail!("Open DataCraft to migrate this data source's credentials before scheduling it");
+    }
+    let read = |entry: Option<keyring::Entry>| -> anyhow::Result<Option<String>> {
+        match entry.context("open credential store entry")?.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(error).context("read credential store"),
+        }
+    };
+    if cfg.driver != crate::db::Driver::Sqlite && cfg.auth != crate::db::AuthMode::NoAuth
+        && let Some(password) = read(keychain_entry(id))?
+    {
+        cfg.password = password;
+    }
+    if cfg.properties.iter().any(|(name, _)| crate::db::is_secret_property(name))
+        && let Some(json) = read(properties_entry(id))?
+    {
+        let secrets = serde_json::from_str(&json).context("parse saved secret properties")?;
+        fill_secret_properties(&mut cfg, &secrets);
+    }
+    if (cfg.ssh.enabled || !cfg.tls.key_file.trim().is_empty()) && let Some(json) = read(ssh_entry(id))? {
+        let secrets: SshSecrets = serde_json::from_str(&json).context("parse saved SSH credentials")?;
+        (cfg.ssh.password, cfg.ssh.passphrase, cfg.tls.key_passphrase) = (secrets.password, secrets.passphrase, secrets.tls_key_passphrase);
+    }
+    Ok(cfg)
 }
 
 pub fn save_connections(list: &[ConnectionConfig]) -> anyhow::Result<()> {
