@@ -122,6 +122,19 @@ struct CellEditor {
     hex: bool,
 }
 
+/// A cell's whole value, in a popup next to the cell (the grid shows one line of up to 300
+/// characters). Taken when it opens.
+struct ValuePopup {
+    column: String,
+    data_type: Option<String>,
+    /// As `ResultView::display_value`: `Some(None)` is NULL, `None` a new row's default.
+    value: Option<Cell>,
+    /// The value as shown: JSON objects and arrays indented.
+    shown: String,
+    /// The cell's bottom-left corner.
+    anchor: egui::Pos2,
+}
+
 pub struct ResultView {
     cell_editor: Option<CellEditor>,
     pub rs: ResultSet,
@@ -155,10 +168,15 @@ pub struct ResultView {
     pub edit: Option<EditSession>,
     /// Visual row shown in the record view (the row as a vertical form).
     record_view: Option<usize>,
+    /// The cell whose whole value is shown in a popup.
+    value_popup: Option<ValuePopup>,
     /// Why it is read-only (tooltip).
     pub readonly_reason: Option<String>,
     /// true once the app has decided whether it is editable.
     pub edit_checked: bool,
+    /// An explain plan the result holds, shown as a tree unless `plan_as_text`.
+    plan: Option<crate::db::plan::PlanNode>,
+    plan_as_text: bool,
 }
 
 impl ResultView {
@@ -267,7 +285,10 @@ impl ResultView {
     pub fn new(rs: ResultSet, salt: u64) -> Self {
         let title = statement_title(&rs.statement);
         let order = (0..rs.rows.len()).collect();
+        let plan = crate::db::plan::detect(&rs);
         Self {
+            plan,
+            plan_as_text: false,
             cell_editor: None,
             rs,
             title,
@@ -290,6 +311,7 @@ impl ResultView {
             salt,
             edit: None,
             record_view: None,
+            value_popup: None,
             readonly_reason: None,
             edit_checked: false,
         }
@@ -1163,6 +1185,8 @@ enum GridAction {
     DeleteRows,
     CloneRow,
     RecordView(usize),
+    /// Visual row, column and where the popup opens.
+    ViewValue(usize, usize, egui::Pos2),
     Copy(String),
 }
 
@@ -1194,6 +1218,15 @@ pub fn show_result(
             )
         });
         return GridResponse::default();
+    }
+    if let Some(plan) = view.plan.as_ref() {
+        if !view.plan_as_text {
+            view.plan_as_text = crate::ui::plan_view::show(ui, plan, view.salt);
+            return GridResponse::default();
+        }
+        if ui.small_button(tr("Show as Tree")).clicked() {
+            view.plan_as_text = false;
+        }
     }
 
     let mut actions: Vec<GridAction> = Vec::new();
@@ -1243,7 +1276,8 @@ pub fn show_result(
     let page_rows = (area_rect.height() / ROW_H).floor().max(1.0) as usize;
     let owns_focus = ui.memory(|m| m.focused().is_none() || m.has_focus(edit_id));
     let editor_pending_focus = view.edit.as_ref().and_then(|e| e.editing.as_ref()).is_some_and(|ed| ed.focus);
-    let keyboard_enabled = ui.is_enabled() && !egui::Popup::is_any_open(ui.ctx());
+    // Not while the value popup is open: its Esc must not also discard the grid's changes.
+    let keyboard_enabled = ui.is_enabled() && !egui::Popup::is_any_open(ui.ctx()) && view.value_popup.is_none();
 
     if keyboard_enabled && editable && editing_now && (owns_focus || editor_pending_focus) {
         let action = ui.input_mut(|i| {
@@ -1636,7 +1670,13 @@ pub fn show_result(
                             let mods = ui_mods(&resp);
                             actions.push(GridAction::Select { vr, col: Some(c), mods });
                         }
-                        if resp.double_clicked() && can_edit {
+                        let cell_rect = resp.rect;
+                        // The whole value: Alt+Click (⌥-click) on any cell, or a double click on
+                        // one that can't be edited inline (query results, NoSQL engines, read-only
+                        // connections and columns), where a double click edits otherwise.
+                        if (resp.clicked() && ui_mods(&resp).alt) || (resp.double_clicked() && !can_edit) {
+                            actions.push(GridAction::ViewValue(vr, c, cell_rect.left_bottom()));
+                        } else if resp.double_clicked() {
                             actions.push(GridAction::StartEdit(vr, c));
                         }
                         let resp = if editable && !can_edit && resp.hovered() && edit.is_some_and(|e| !e.state.is_deleted(rref)) {
@@ -1660,7 +1700,9 @@ pub fn show_result(
                                     actions.push(GridAction::Revert(rref, c));
                                     ui.close();
                                 }
-                                if ui.add_enabled(!deleted, egui::Button::new(tr("Delete row"))).clicked() {
+                                // Insert-only targets (ClickHouse) can't delete rows already stored.
+                                let insert_only = edit.is_some_and(|e| e.target.insert_only) && matches!(rref, RowRef::Existing(_));
+                                if ui.add_enabled(!deleted && !insert_only, egui::Button::new(tr("Delete row"))).clicked() {
                                     actions.push(GridAction::DeleteRows);
                                     ui.close();
                                 }
@@ -1670,6 +1712,11 @@ pub fn show_result(
                                     ui.close();
                                 }
                                 ui.separator();
+                            }
+                            let view_value = if cfg!(target_os = "macos") { "⌥Click" } else { "Alt+Click" };
+                            if ui.add(egui::Button::new(tr("View Value")).shortcut_text(view_value)).clicked() {
+                                actions.push(GridAction::ViewValue(vr, c, cell_rect.left_bottom()));
+                                ui.close();
                             }
                             if ui.add(egui::Button::new(tr("Record View")).shortcut_text("⇧↩")).clicked() {
                                 actions.push(GridAction::RecordView(vr));
@@ -1844,6 +1891,19 @@ pub fn show_result(
             GridAction::DeleteRows => view.delete_selected(),
             GridAction::CloneRow => view.clone_selected_row(),
             GridAction::RecordView(vr) => view.record_view = Some(vr),
+            GridAction::ViewValue(vr, c, anchor) => {
+                if let Some(row) = view.row_ref(vr)
+                    && let Some(column) = view.rs.columns.get(c).cloned()
+                {
+                    let data_type = columns_info.and_then(|cols| cols.iter().find(|x| x.name == column)).map(|x| x.data_type.to_lowercase());
+                    let value = view.display_value(row, c);
+                    let shown = match &value {
+                        Some(Some(v)) => pretty_json(v).unwrap_or_else(|| v.clone()),
+                        _ => String::new(),
+                    };
+                    view.value_popup = Some(ValuePopup { column, data_type, value, shown, anchor });
+                }
+            }
             GridAction::Copy(t) => ui.ctx().copy_text(t),
         }
     }
@@ -1869,6 +1929,8 @@ pub fn show_result(
                 .request_repaint_after(std::time::Duration::from_millis(30));
         }
     }
+    // First: its Esc closes it only, not also the record view.
+    value_popup_ui(ui, view);
     record_view_ui(ui, view, columns_info);
     if view.selected_cells.len() > 1 {
         ui.painter().text(
@@ -1883,6 +1945,128 @@ pub fn show_result(
         error,
         submit: save_on_row_change && view.row_change_needs_save(previous_row),
     }
+}
+
+/// The value popup: the cell's whole value, selectable, below the cell. Esc or a click outside
+/// closes it.
+fn value_popup_ui(ui: &Ui, view: &mut ResultView) {
+    let Some(popup) = view.value_popup.as_ref() else { return };
+    let p = pal(ui);
+    let font = FontId::monospace(12.5);
+    let char_w = ui.fonts_mut(|f| f.glyph_width(&font, '0'));
+    let longest = popup.shown.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+    let width = (longest as f32 * char_w + 28.0).clamp(280.0, 640.0);
+    let id = egui::Id::new(("value_popup", view.salt));
+    // A modal (Esc and a click outside close it) placed at the cell instead of the center.
+    let area = egui::Area::new(id)
+        .kind(egui::UiKind::Modal)
+        .sense(Sense::hover())
+        .order(egui::Order::Foreground)
+        .interactable(true)
+        .fixed_pos(popup.anchor + vec2(0.0, 2.0))
+        .constrain(true);
+    let mut close = false;
+    let modal = egui::Modal::new(id).area(area).backdrop_color(Color32::from_black_alpha(40)).show(ui.ctx(), |ui| {
+        ui.set_width(width);
+        ui.horizontal(|ui| {
+            ui.add(egui::Label::new(RichText::new(&popup.column).strong().color(p.text)).truncate());
+            if let Some(t) = &popup.data_type {
+                ui.label(RichText::new(t).small().color(p.muted));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                close = theme::icon_button(ui, Ico::Close, true, tr("Close (Esc)")).clicked();
+                if let Some(Some(v)) = &popup.value
+                    && ui.small_button(tr("Copy value")).clicked()
+                {
+                    ui.ctx().copy_text(v.clone());
+                }
+            });
+        });
+        ui.separator();
+        match &popup.value {
+            Some(Some(_)) => {
+                egui::ScrollArea::vertical().max_height(420.0).auto_shrink([false, true]).show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut popup.shown.as_str())
+                            .font(font)
+                            .frame(egui::Frame::NONE)
+                            .background_color(Color32::TRANSPARENT)
+                            .desired_rows(1)
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+            }
+            Some(None) => {
+                ui.label(RichText::new("<null>").monospace().color(p.disabled));
+            }
+            None => {
+                ui.label(RichText::new("<default>").monospace().color(p.disabled));
+            }
+        }
+    });
+    if modal.should_close() || close {
+        view.value_popup = None;
+    }
+}
+
+/// `text` indented by two spaces per level if it is a JSON object or array, else None. Only
+/// whitespace changes: numbers (even past f64), strings and the key order stay as they were.
+fn pretty_json(text: &str) -> Option<String> {
+    let t = text.trim();
+    if !((t.starts_with('{') && t.ends_with('}')) || (t.starts_with('[') && t.ends_with(']'))) {
+        return None;
+    }
+    serde_json::from_str::<serde::de::IgnoredAny>(t).ok()?;
+    let mut out = String::with_capacity(t.len() * 2);
+    let newline = |out: &mut String, depth: usize| {
+        out.push('\n');
+        out.extend(std::iter::repeat_n("  ", depth));
+    };
+    let (mut depth, mut in_string, mut escaped) = (0usize, false, false);
+    let mut chars = t.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if in_string {
+            out.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => {
+                in_string = true;
+                out.push(ch);
+            }
+            '{' | '[' => {
+                out.push(ch);
+                while chars.next_if(|c| c.is_whitespace()).is_some() {}
+                // `{}` and `[]` stay on one line.
+                if let Some(end) = chars.next_if(|c| matches!(c, '}' | ']')) {
+                    out.push(end);
+                } else {
+                    depth += 1;
+                    newline(&mut out, depth);
+                }
+            }
+            '}' | ']' => {
+                depth = depth.saturating_sub(1);
+                newline(&mut out, depth);
+                out.push(ch);
+            }
+            ',' => {
+                out.push(ch);
+                newline(&mut out, depth);
+            }
+            ':' => out.push_str(": "),
+            c if c.is_whitespace() => {}
+            c => out.push(c),
+        }
+    }
+    Some(out)
 }
 
 /// Record view: the row as a vertical list of column / value, with previous / next.
@@ -2330,6 +2514,7 @@ mod filter_tests {
 #[cfg(test)]
 mod keyboard_tests {
     use super::*;
+    use egui_kittest::kittest::Queryable;
 
     fn wide_table_scenario(render: bool) {
         let mut view = ResultView::new(ResultSet {
@@ -2442,6 +2627,7 @@ mod keyboard_tests {
             key_cols: vec![0],
             binary_cols: vec![false, false],
             has_pk: true,
+            insert_only: false,
         }));
         view.selected = Some((0, 1));
         view.selected_rows = BTreeSet::from([0]);
@@ -2460,6 +2646,10 @@ mod keyboard_tests {
         if editing {
             view.begin_edit(0, 1);
         }
+        harness_for(view, auto_save)
+    }
+
+    fn harness_for(view: ResultView, auto_save: bool) -> egui_kittest::Harness<'static, State> {
         let mut first = true;
         let mut h = egui_kittest::Harness::builder()
             .with_size(vec2(900.0, 500.0))
@@ -2487,6 +2677,135 @@ mod keyboard_tests {
             );
         h.run_steps(3);
         h
+    }
+
+    /// A query result (not editable): a JSON document and a NULL.
+    fn read_only_view() -> ResultView {
+        ResultView::new(
+            ResultSet {
+                columns: vec!["id".into(), "note".into()],
+                rows: vec![vec![Some("1".into()), Some(r#"{"b":[1,2.50],"a":"x}"}"#.into())], vec![Some("2".into()), None]],
+                ..Default::default()
+            },
+            7,
+        )
+    }
+
+    /// Two clicks in one frame (queued events each get a frame, 0.25 s apart: too slow for a
+    /// double click).
+    fn double_click(h: &mut egui_kittest::Harness<'static, State>, pos: egui::Pos2) {
+        let events = &mut h.input_mut().events;
+        events.push(egui::Event::PointerMoved(pos));
+        for pressed in [true, false, true, false] {
+            events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE });
+        }
+    }
+
+    fn click(h: &egui_kittest::Harness<'static, State>, pos: egui::Pos2) {
+        h.hover_at(pos);
+        h.drag_at(pos);
+        h.drop_at(pos);
+    }
+
+    fn value_popup_scenario(render: bool) {
+        let mut h = harness_for(read_only_view(), false);
+        double_click(&mut h, pos2(160.0, 50.0));
+        h.run_steps(3);
+        let popup = h.state().view.value_popup.as_ref().expect("the value popup");
+        assert_eq!((popup.column.as_str(), popup.shown.as_str()), ("note", "{\n  \"b\": [\n    1,\n    2.50\n  ],\n  \"a\": \"x}\"\n}"));
+        // Below the cell.
+        assert!((55.0..75.0).contains(&popup.anchor.y), "{:?}", popup.anchor);
+        h.get_by_label("Copy value");
+        if render {
+            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/navigation-snapshots");
+            std::fs::create_dir_all(&dir).unwrap();
+            h.render().unwrap().save(dir.join("value-popup.png")).unwrap();
+        }
+        h.key_press(Key::Escape);
+        h.run_steps(2);
+        assert!(h.state().view.value_popup.is_none());
+        assert_eq!(h.state().view.selected, Some((0, 1)));
+    }
+
+    #[test]
+    fn double_click_shows_a_read_only_value_and_esc_closes_it() { value_popup_scenario(false); }
+
+    #[test]
+    #[ignore = "renders with wgpu"]
+    fn render_value_popup() { value_popup_scenario(true); }
+
+    #[test]
+    fn a_click_outside_closes_the_value_popup_and_only_that() {
+        let mut h = harness_for(read_only_view(), false);
+        double_click(&mut h, pos2(160.0, 74.0));
+        h.run_steps(3);
+        assert!(matches!(h.state().view.value_popup.as_ref().map(|p| &p.value), Some(Some(None))), "NULL");
+        // Over another cell: the click closes the popup without selecting it.
+        click(&h, pos2(60.0, 50.0));
+        h.run_steps(3);
+        assert!(h.state().view.value_popup.is_none());
+        assert_eq!(h.state().view.selected, Some((1, 1)));
+    }
+
+    #[test]
+    fn editable_cells_still_edit_on_double_click_and_the_popup_keeps_pending_changes() {
+        let mut h = harness(false, false);
+        double_click(&mut h, pos2(160.0, 50.0));
+        h.run_steps(3);
+        assert!(h.state().view.value_popup.is_none());
+        assert!(h.state().view.edit.as_ref().is_some_and(|e| e.editing.is_some()), "inline editor");
+        h.input_mut().events.push(egui::Event::Text("edited".into()));
+        h.run_steps(2);
+        h.key_press(Key::Enter);
+        h.run_steps(2);
+        assert!(h.state().view.is_dirty());
+        // From the context menu.
+        h.hover_at(pos2(160.0, 50.0));
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos: pos2(160.0, 50.0), button: egui::PointerButton::Secondary, pressed, modifiers: Modifiers::NONE });
+        }
+        h.run_steps(2);
+        h.get_by_label_contains("View Value").click();
+        h.run_steps(3);
+        assert_eq!(h.state().view.value_popup.as_ref().map(|p| p.shown.as_str()), Some("edited"));
+        h.key_press(Key::Escape);
+        h.run_steps(2);
+        assert!(h.state().view.value_popup.is_none());
+        assert!(h.state().view.is_dirty(), "Esc closed the popup only");
+    }
+
+    #[test]
+    fn alt_click_shows_any_value_without_editing() {
+        let mut h = harness(false, false);
+        let events = &mut h.input_mut().events;
+        events.push(egui::Event::ModifiersChanged(Modifiers::ALT));
+        events.push(egui::Event::PointerMoved(pos2(160.0, 98.0)));
+        for pressed in [true, false] {
+            events.push(egui::Event::PointerButton { pos: pos2(160.0, 98.0), button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::ALT });
+        }
+        h.run_steps(1);
+        h.input_mut().events.push(egui::Event::ModifiersChanged(Modifiers::NONE));
+        h.run_steps(2);
+        assert_eq!(h.state().view.value_popup.as_ref().map(|p| p.shown.as_str()), Some("c"));
+        assert_eq!(h.state().view.selected, Some((2, 1)));
+        assert!(h.state().view.edit.as_ref().is_some_and(|e| e.editing.is_none()), "no inline editor");
+        // A plain click outside closes it.
+        click(&h, pos2(60.0, 50.0));
+        h.run_steps(3);
+        assert!(h.state().view.value_popup.is_none());
+    }
+
+    #[test]
+    fn json_is_indented_without_changing_values() {
+        let doc = r#"{"b":[1,2.50,123456789012345678901234567890],"a":{"k":"x}, \"y\" [z]"},"e":[],"o":{ },"u":"ü"}"#;
+        let expected = "{\n  \"b\": [\n    1,\n    2.50,\n    123456789012345678901234567890\n  ],\n  \"a\": {\n    \"k\": \"x}, \\\"y\\\" [z]\"\n  },\n  \"e\": [],\n  \"o\": {},\n  \"u\": \"ü\"\n}";
+        assert_eq!(pretty_json(doc).as_deref(), Some(expected));
+        // Already indented: the same.
+        assert_eq!(pretty_json(expected).as_deref(), Some(expected));
+        assert_eq!(pretty_json(" [ ] ").as_deref(), Some("[]"));
+        for other in ["42", "\"s\"", "{not json}", "[1,", "text {\"a\":1}", "", "{\"a\":1} {\"b\":2}"] {
+            assert_eq!(pretty_json(other), None, "{other}");
+        }
     }
 
     #[test]
@@ -2529,6 +2848,7 @@ mod keyboard_tests {
             key_cols: vec![0],
             binary_cols: vec![false; 7],
             has_pk: true,
+            insert_only: false,
         }));
         v.select_cell(0, 2, Modifiers::NONE);
         v.select_cell(9, 2, Modifiers::SHIFT);
@@ -2697,6 +3017,7 @@ mod keyboard_tests {
                         dark: true,
                         font_size: 14.0,
                         columns: None,
+                        auto_complete: true,
                     };
                     for action in state.console.show_table(ui, &cx) {
                         if let ConsoleAction::Submit(i) = action {

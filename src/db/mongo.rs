@@ -32,7 +32,7 @@ pub struct MongoSession {
     closed: bool,
 }
 
-fn enc(s: &str) -> String {
+pub(crate) fn enc(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => (b as char).to_string(),
@@ -52,6 +52,18 @@ pub fn connection_string(cfg: &ConnectionConfig) -> String {
     let mut params: Vec<String> = cfg.url_extra.trim().trim_start_matches('?').split('&').filter(|p| !p.is_empty()).map(str::to_string).collect();
     if !creds.is_empty() && !params.iter().any(|p| p.to_ascii_lowercase().starts_with("authsource=")) {
         params.push("authSource=admin".into());
+    }
+    // Through an SSH tunnel: only the server behind it (the replica set's other members aren't
+    // reachable), and its certificate can't name the tunnel's 127.0.0.1.
+    if cfg.tunnel_host.is_some() {
+        let has = |params: &[String], name: &str| params.iter().any(|p| p.to_ascii_lowercase().starts_with(&format!("{}=", name.to_ascii_lowercase())));
+        if !has(&params, "directConnection") {
+            params.push("directConnection=true".into());
+        }
+        let tls = params.iter().any(|p| matches!(p.to_ascii_lowercase().as_str(), "tls=true" | "ssl=true"));
+        if tls && !has(&params, "tlsAllowInvalidHostnames") {
+            params.push("tlsAllowInvalidHostnames=true".into());
+        }
     }
     let query = if params.is_empty() { String::new() } else { format!("?{}", params.join("&")) };
     format!("{scheme}://{creds}{authority}/{query}")

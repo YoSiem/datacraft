@@ -39,6 +39,8 @@ pub struct TableRef {
 
 pub enum ExplorerAction {
     Backup(ConnId, String),
+    /// "Run SQL Script…" on the connection, or on one of its databases.
+    RunScript(ConnId, Option<String>),
     NewConnection,
     Connect(ConnId),
     Disconnect(ConnId),
@@ -501,6 +503,10 @@ fn connection_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Exp
             actions.push(ExplorerAction::NewConsole(id, None));
             ui.close();
         }
+        if crate::db::script::supported(c.cfg.driver) && ui.add_enabled(connected && !c.cfg.read_only, egui::Button::new(tr("Run SQL Script…"))).clicked() {
+            actions.push(ExplorerAction::RunScript(id, None));
+            ui.close();
+        }
         ui.separator();
         if ui.button(tr("Properties…")).clicked() {
             actions.push(ExplorerAction::Edit(id));
@@ -508,6 +514,10 @@ fn connection_rows(ui: &mut Ui, state: &mut ExplorerState, actions: &mut Vec<Exp
         }
         if ui.button(tr("Duplicate")).clicked() {
             actions.push(ExplorerAction::Duplicate(id));
+            ui.close();
+        }
+        if ui.button(tr("Copy as URL")).on_hover_text(tr("The connection's URL for other tools, without the password")).clicked() {
+            ui.ctx().copy_text(crate::db::url::connection_url(&c.cfg));
             ui.close();
         }
         if ui.button(RichText::new(tr("Delete…")).color(p.error)).clicked() {
@@ -705,6 +715,10 @@ fn database_rows(
             ui.close();
         }
         let connected = matches!(c.status, ConnStatus::Connected);
+        if crate::db::script::supported(c.cfg.driver) && ui.add_enabled(connected && !c.cfg.read_only, egui::Button::new(tr("Run SQL Script…"))).clicked() {
+            actions.push(ExplorerAction::RunScript(id, Some(db_name.clone())));
+            ui.close();
+        }
         let sql = !c.cfg.driver.is_nosql();
         if sql && ui.add_enabled(connected, egui::Button::new(tr("New Table…"))).clicked() {
             actions.push(ExplorerAction::NewTable { conn: id, db: db_name.clone(), schema: None });
@@ -886,6 +900,8 @@ fn object_groups(
     let groups: &[(ObjectKind, &str, &str)] = match driver {
         Driver::Redis => &[(ObjectKind::Table, tr("key groups"), "t")],
         Driver::MongoDb => &[(ObjectKind::Table, tr("collections"), "t"), (ObjectKind::View, tr("views"), "v")],
+        Driver::InfluxDb => &[(ObjectKind::Table, tr("measurements"), "t")],
+        Driver::Kusto => &[(ObjectKind::Table, tr("Tables"), "t"), (ObjectKind::View, tr("Materialized views"), "v")],
         _ => &[(ObjectKind::Table, tr("Tables"), "t"), (ObjectKind::View, tr("Views"), "v")],
     };
     for &(kind, label, gk) in groups {
@@ -944,7 +960,7 @@ fn object_groups(
         }
         for t in tables {
             let tref = TableRef { conn, db: db.to_string(), schema: s.name.clone(), table: t.name.clone() };
-            table_rows(ui, state, actions, tref, t, depth + 1, sql, driver != Driver::Redis);
+            table_rows(ui, state, actions, tref, t, depth + 1, sql, driver.can_copy());
         }
     }
     if let Some(list) = routines {

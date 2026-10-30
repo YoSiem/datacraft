@@ -1,11 +1,16 @@
 //! One bundled mark for native windows, the project menu and About.
 use egui::{Color32, ColorImage, Id, Rect, TextureHandle, TextureOptions, Ui, pos2};
 
-pub const ICON_PNG: &[u8] = include_bytes!("../../assets/icon.png");
+/// The Dock icon while the app runs: the same shape as the bundle's .icns (Apple's grid), so the
+/// icon keeps its size whether DataCraft is open or not.
+#[cfg(target_os = "macos")]
+const WINDOW_ICON_PNG: &[u8] = include_bytes!("../../assets/icon-macos.png");
+#[cfg(not(target_os = "macos"))]
+const WINDOW_ICON_PNG: &[u8] = include_bytes!("../../assets/icon.png");
 
 pub fn icon_data() -> egui::IconData {
     // The asset is generated and validated in the repository, never supplied by a user.
-    eframe::icon_data::from_png_bytes(ICON_PNG).expect("bundled DataCraft icon is a valid PNG")
+    eframe::icon_data::from_png_bytes(WINDOW_ICON_PNG).expect("bundled DataCraft icon is a valid PNG")
 }
 
 pub fn paint(ui: &Ui, rect: Rect) {

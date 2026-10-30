@@ -29,9 +29,12 @@ pub fn literal(driver: Driver, value: &Cell) -> String {
             let escaped = v.replace('\'', "''");
             match driver {
                 Driver::MsSql => format!("N'{escaped}'"),
-                // MySQL and Snowflake also treat a backslash as an escape inside strings.
-                Driver::MySql | Driver::MariaDb | Driver::Snowflake => format!("'{}'", escaped.replace('\\', "\\\\")),
-                Driver::Postgres | Driver::Sqlite | Driver::Oracle | Driver::Redis | Driver::MongoDb => format!("'{escaped}'"),
+                // MySQL and Snowflake also treat a backslash as an escape inside strings; ClickHouse
+                // does the same inside '…' (its `"…"` stays an identifier).
+                Driver::MySql | Driver::MariaDb | Driver::Snowflake | Driver::ClickHouse => format!("'{}'", escaped.replace('\\', "\\\\")),
+                Driver::Postgres | Driver::Sqlite | Driver::Oracle | Driver::Redis | Driver::MongoDb | Driver::InfluxDb => format!("'{escaped}'"),
+                // KQL escapes both the quote and the backslash with a backslash.
+                Driver::Kusto => format!("'{}'", v.replace('\\', "\\\\").replace('\'', "\\'")),
             }
         }
     }
@@ -92,6 +95,7 @@ pub fn change_statements(
         match driver {
             Driver::Redis => out.extend(crate::db::redis_db::change_commands(ch, types)?),
             Driver::MongoDb => out.push(crate::db::mongo::change_command(table, ch, types)?),
+            Driver::InfluxDb | Driver::Kusto => return Err(crate::i18n::tr("Editing is not available for this engine").into()),
             _ => out.push(change_sql(driver, schema, table, ch)),
         }
     }
@@ -143,6 +147,7 @@ mod tests {
     fn odd_identifiers() {
         assert_eq!(quote_ident(Driver::MsSql, "a]b"), "[a]]b]");
         assert_eq!(quote_ident(Driver::Postgres, "a\"b"), "\"a\"\"b\"");
+        assert_eq!(quote_ident(Driver::ClickHouse, r"a`b\"), r"`a\`b\\`");
         assert!(is_lossy_display(&Some("0xFF…".into())));
         assert!(!is_lossy_display(&Some("0xFF".into())));
     }

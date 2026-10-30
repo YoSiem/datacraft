@@ -1,12 +1,14 @@
 //! "Copy Table To…" (DataGrip): copies a table's rows (all, a percentage or those matching a
 //! filter) to another connection, creating the target table when it doesn't exist. It runs on
 //! dedicated sessions, like the schema search, and inserts in one transaction (all or nothing).
+//! ClickHouse has no transactions: its batches are inserted one after another, and an error or
+//! a cancel keeps those already inserted.
 //! MongoDB collections can be the source (read with `find` and a JSON filter) or the target
 //! (written with `insertMany` in batches, without a transaction); values travel as text and
 //! get their BSON type back from the source column's type.
 
 use super::subset::{self, ForeignKey, TableRows};
-use super::{Cell, ColumnInfo, ConnectionConfig, Driver, SchemaInfo, Session};
+use super::{Cell, ColumnInfo, ConnectionConfig, Driver, Engine, SchemaInfo, Session};
 use crate::edit::literal;
 use crate::i18n::{tr, trf};
 use crate::ui::create_dialog::{NewColumn, create_table_sql};
@@ -38,7 +40,8 @@ pub struct CopyRequest {
     pub target_table: String,
     /// Create the target table first (it doesn't exist).
     pub create: bool,
-    /// Delete the target's rows first, in the same transaction.
+    /// Delete the target's rows first, in the same transaction (ClickHouse: TRUNCATE, and no
+    /// transaction).
     pub clear: bool,
     /// Masking rule of each column (`Keep` = copied as is).
     pub masks: Vec<Mask>,
@@ -239,6 +242,9 @@ fn classify(driver: Driver, data_type: &str) -> Kind {
             _ => Kind::Text,
         };
     }
+    if driver == Driver::ClickHouse {
+        return classify_clickhouse(data_type);
+    }
     let t = data_type.trim().to_ascii_lowercase();
     let base = t.split('(').next().unwrap_or("").trim();
     let args = type_args(&t);
@@ -281,6 +287,42 @@ fn classify(driver: Driver, data_type: &str) -> Kind {
     }
 }
 
+/// ClickHouse type names (`Nullable(…)` / `LowCardinality(…)` unwrapped). Unsigned and wide
+/// integers go to the next type that holds them; strings, enums and composite types (arrays,
+/// maps, tuples, JSON) travel as text.
+fn classify_clickhouse(data_type: &str) -> Kind {
+    let t = super::clickhouse::base_type(data_type);
+    let args = type_args(t);
+    let scale = || args.first().copied().unwrap_or(0);
+    match t.split('(').next().unwrap_or("").trim() {
+        "Bool" | "Boolean" => Kind::Bool,
+        "Int8" | "UInt8" | "Int16" => Kind::SmallInt,
+        "UInt16" | "Int32" => Kind::Int,
+        "UInt32" | "Int64" => Kind::BigInt,
+        "UInt64" => Kind::Decimal(Some((20, 0))),
+        "Int128" | "UInt128" => Kind::Decimal(Some((39, 0))),
+        "Int256" | "UInt256" => Kind::Decimal(Some((77, 0))),
+        "Float32" | "Float64" | "BFloat16" => Kind::Float,
+        "Decimal" => match args.as_slice() {
+            [p, s] => Kind::Decimal(Some((*p, *s))),
+            [p] => Kind::Decimal(Some((*p, 0))),
+            _ => Kind::Decimal(None),
+        },
+        "Decimal32" => Kind::Decimal(Some((9, scale()))),
+        "Decimal64" => Kind::Decimal(Some((18, scale()))),
+        "Decimal128" => Kind::Decimal(Some((38, scale()))),
+        "Decimal256" => Kind::Decimal(Some((76, scale()))),
+        "Date" | "Date32" => Kind::Date,
+        "DateTime" | "DateTime64" => Kind::Timestamp,
+        "Time" | "Time64" => Kind::Time,
+        "FixedString" => args.first().map_or(Kind::Text, |&n| Kind::Varchar(n)),
+        "UUID" => Kind::Varchar(36),
+        "IPv4" => Kind::Varchar(15),
+        "IPv6" => Kind::Varchar(39),
+        _ => Kind::Text,
+    }
+}
+
 /// true for binary columns: the grid shows them in hex (sometimes cut), so they can't be copied.
 pub fn is_binary(driver: Driver, data_type: &str) -> bool {
     classify(driver, data_type) == Kind::Binary
@@ -305,7 +347,7 @@ pub fn target_type(from: Driver, to: Driver, data_type: &str, primary_key: bool)
     use Driver::*;
     match (kind, to) {
         // Never a copy target (the dialog isn't offered for it).
-        (_, Redis | MongoDb) => "string".into(),
+        (_, Redis | MongoDb | InfluxDb | Kusto) => "string".into(),
         (_, Sqlite) => match kind {
             Kind::SmallInt | Kind::Int | Kind::BigInt => "INTEGER".into(),
             Kind::Decimal(_) => "NUMERIC".into(),
@@ -332,13 +374,22 @@ pub fn target_type(from: Driver, to: Driver, data_type: &str, primary_key: bool)
         (Kind::Float, Postgres) => "double precision".into(),
         (Kind::Float, MySql | MariaDb) => "double".into(),
         (Kind::Float, Oracle) => "binary_double".into(),
+        // ClickHouse's `float` is Float32.
+        (Kind::Float, ClickHouse) => "Float64".into(),
         (Kind::Float, _) => "float".into(),
         (Kind::Bool, MsSql) => "bit".into(),
         (Kind::Bool, Oracle) => "number(1)".into(),
         (Kind::Bool, _) => "boolean".into(),
+        // ClickHouse's Date and DateTime start in 1970 (earlier values silently become
+        // 1970-01-01) and DateTime has no fraction of a second: the wider types keep both, and
+        // DateTime64 also reads the offset of a timestamp with time zone.
+        (Kind::Date, ClickHouse) => "Date32".into(),
         (Kind::Date, _) => "date".into(),
+        // ClickHouse: Time exists only on recent servers; text is the portable choice.
+        (Kind::Time, ClickHouse) => "String".into(),
         (Kind::Time, Oracle) => "varchar2(32)".into(),
         (Kind::Time, _) => "time".into(),
+        (Kind::Timestamp | Kind::TimestampTz, ClickHouse) => "DateTime64(6)".into(),
         (Kind::Timestamp, MsSql) => "datetime2".into(),
         (Kind::Timestamp, MySql | MariaDb) => "datetime(6)".into(),
         (Kind::Timestamp, Snowflake) => "timestamp_ntz".into(),
@@ -352,6 +403,8 @@ pub fn target_type(from: Driver, to: Driver, data_type: &str, primary_key: bool)
         (Kind::Varchar(n), MySql | MariaDb) if n <= 16_000 => format!("varchar({n})"),
         (Kind::Varchar(n), Oracle) if n <= 4000 => format!("varchar2({n} char)"),
         (Kind::Varchar(n), Postgres | Snowflake) => format!("varchar({n})"),
+        // ClickHouse has no sized strings and no separate text/blob types.
+        (Kind::Varchar(_) | Kind::Text | Kind::Binary, ClickHouse) => "String".into(),
         (Kind::Text, Postgres) => "text".into(),
         (Kind::Varchar(_) | Kind::Text, MsSql) => "nvarchar(max)".into(),
         (Kind::Varchar(_) | Kind::Text, MySql | MariaDb) => "longtext".into(),
@@ -700,7 +753,7 @@ async fn read_documents(s: &mut Session, req: &CopyRequest) -> anyhow::Result<Ve
 /// cancel keeps the batches already inserted. Documents whose `_id` the collection already has
 /// are skipped. Returns the documents inserted.
 async fn write_documents(t: &mut Session, from: Driver, req: &CopyRequest, columns: &[ColumnInfo], rows: Vec<Vec<Cell>>) -> anyhow::Result<u64> {
-    let Session::MongoDb(m) = t else { anyhow::bail!(tr("Not available for this engine")) };
+    let Engine::MongoDb(m) = &mut **t else { anyhow::bail!(tr("Not available for this engine")) };
     if req.clear {
         m.execute(&format!("{}.deleteMany({{}})", mongo_collection(&req.target_table)), 0).await?;
     }
@@ -858,13 +911,15 @@ pub async fn copy(source: ConnectionConfig, target: ConnectionConfig, req: CopyR
     for p in parts {
         let table = Session::quote_table(to, schema, &p.target_table);
         if p.clear {
-            statements.push(format!("DELETE FROM {table}"));
+            // ClickHouse refuses a DELETE without WHERE.
+            statements.push(if to == Driver::ClickHouse { format!("TRUNCATE TABLE {table}") } else { format!("DELETE FROM {table}") });
         }
         report.push((p.target_table, p.rows.len() as u64));
         statements.extend(insert_sql(from, to, &table, &p.columns, &p.names, p.rows));
     }
     let handle = t.cancel_handle();
     // Dropping the session on a cancel closes it, so the open transaction is rolled back.
+    // ClickHouse has no transactions: what already ran (the TRUNCATE, earlier batches) stays.
     tokio::select! {
         _ = cancel.notified() => {
             if let Some(h) = handle {
@@ -927,6 +982,32 @@ mod tests {
         assert_eq!(target_type(Driver::Postgres, Driver::MySql, "integer[]", false), "longtext");
         assert!(is_binary(Driver::Postgres, "bytea") && is_binary(Driver::MsSql, "varbinary(max)"));
         assert!(!is_binary(Driver::Oracle, "varchar2(10 char)"));
+    }
+
+    #[test]
+    fn translates_clickhouse_types() {
+        // Into ClickHouse: types that keep the values (its `float` is Float32; Date and DateTime
+        // start in 1970, and DateTime has no fractions of a second).
+        assert_eq!(target_type(Driver::Postgres, Driver::ClickHouse, "double precision", false), "Float64");
+        assert_eq!(target_type(Driver::Sqlite, Driver::ClickHouse, "DATE", false), "Date32");
+        assert_eq!(target_type(Driver::MySql, Driver::ClickHouse, "datetime(6)", false), "DateTime64(6)");
+        assert_eq!(target_type(Driver::Postgres, Driver::ClickHouse, "timestamp with time zone", false), "DateTime64(6)");
+        // Out of ClickHouse: through Nullable / LowCardinality, unsigned integers widened.
+        let from_ch = |ty: &str| target_type(Driver::ClickHouse, Driver::Postgres, ty, false);
+        assert_eq!(from_ch("Nullable(Float64)"), "double precision");
+        assert_eq!(from_ch("UInt8"), "smallint");
+        assert_eq!(from_ch("UInt32"), "bigint");
+        assert_eq!(from_ch("Nullable(UInt64)"), "decimal(20,0)");
+        assert_eq!(from_ch("Decimal(18, 4)"), "decimal(18,4)");
+        assert_eq!(from_ch("Decimal64(3)"), "decimal(18,3)");
+        assert_eq!(from_ch("DateTime64(3, 'UTC')"), "timestamp");
+        assert_eq!(from_ch("Date32"), "date");
+        assert_eq!(from_ch("LowCardinality(Nullable(String))"), "text");
+        assert_eq!(from_ch("FixedString(8)"), "varchar(8)");
+        assert_eq!(from_ch("Array(String)"), "text");
+        assert_eq!(target_type(Driver::ClickHouse, Driver::Sqlite, "Bool", false), "BOOLEAN");
+        // Same engine: the type as is.
+        assert_eq!(target_type(Driver::ClickHouse, Driver::ClickHouse, "LowCardinality(String)", false), "LowCardinality(String)");
     }
 
     #[test]
