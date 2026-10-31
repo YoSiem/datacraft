@@ -19,6 +19,7 @@ enum Action {
     Delete(i64),
     Pause(i64),
     EnableService,
+    DisableService,
 }
 enum DraftUpdate {
     Keep,
@@ -70,20 +71,12 @@ struct Interval {
 }
 impl Interval {
     fn from_seconds(seconds: i64) -> Self {
-        let unit = IntervalUnit::ALL
-            .into_iter()
-            .rev()
-            .find(|unit| seconds >= unit.seconds() && seconds % unit.seconds() == 0)
-            .unwrap_or(IntervalUnit::Seconds);
-        Self {
-            value: seconds as f64 / unit.seconds() as f64,
-            unit,
-        }
+        let unit = IntervalUnit::ALL.into_iter().rev().find(|unit| seconds >= unit.seconds() && seconds % unit.seconds() == 0).unwrap_or(IntervalUnit::Seconds);
+        Self { value: seconds as f64 / unit.seconds() as f64, unit }
     }
     fn seconds(self) -> Option<i64> {
         let seconds = self.value * self.unit.seconds() as f64;
-        (seconds.is_finite() && (1.0..=31_536_000.0).contains(&seconds))
-            .then(|| seconds.round() as i64)
+        (seconds.is_finite() && (1.0..=31_536_000.0).contains(&seconds)).then(|| seconds.round() as i64)
     }
     fn change_unit(&mut self, unit: IntervalUnit) {
         self.value = self.value * self.unit.seconds() as f64 / unit.seconds() as f64;
@@ -110,11 +103,7 @@ fn save_task(
 ) -> anyhow::Result<(i64, Option<String>, bool)> {
     // Persist first: starting an idle daemon must not run the previous, overdue SQL.
     let id = store.save(job, now)?;
-    let mut startup_error = if job.enabled {
-        enable().err().map(|error| format!("{error:#}"))
-    } else {
-        None
-    };
+    let mut startup_error = if job.enabled { enable().err().map(|error| format!("{error:#}")) } else { None };
     let running = match status() {
         Ok(running) => running,
         Err(error) => {
@@ -151,10 +140,7 @@ impl Dialog {
         Job {
             id: 0,
             name: String::new(),
-            connection: connections
-                .iter()
-                .find(|c| !c.driver.is_nosql())
-                .map_or(0, |c| c.id),
+            connection: connections.iter().find(|c| !c.driver.is_nosql()).map_or(0, |c| c.id),
             database: String::new(),
             sql: String::new(),
             backup: None,
@@ -206,8 +192,7 @@ impl Dialog {
                     && match &self.draft.backup {
                         Some(backup) => {
                             !(c.read_only && !BackupRequest::local(c.driver))
-                                && (c.driver != Driver::Oracle
-                                    || self.backup_database(c) == c.database)
+                                && (c.driver != Driver::Oracle || self.backup_database(c) == c.database)
                                 && backup.validate(c.driver, &self.backup_database(c)).is_ok()
                         }
                         None => !c.driver.is_nosql() && !self.draft.sql.trim().is_empty(),
@@ -240,15 +225,8 @@ impl Dialog {
             let previous_source = self.draft.connection;
             let connection = connections
                 .iter()
-                .find(|c| {
-                    c.id == self.draft.connection
-                        && !crate::db::backup::BackupMode::for_driver(c.driver).is_empty()
-                })
-                .or_else(|| {
-                    connections
-                        .iter()
-                        .find(|c| !crate::db::backup::BackupMode::for_driver(c.driver).is_empty())
-                });
+                .find(|c| c.id == self.draft.connection && !crate::db::backup::BackupMode::for_driver(c.driver).is_empty())
+                .or_else(|| connections.iter().find(|c| !crate::db::backup::BackupMode::for_driver(c.driver).is_empty()));
             if let Some(connection) = connection {
                 self.draft.connection = connection.id;
                 self.draft.backup = Some(match self.cached_backup.take() {
@@ -269,11 +247,7 @@ impl Dialog {
                 self.draft.name = tr("Database backup").into();
             }
         } else {
-            self.cached_backup = self
-                .draft
-                .backup
-                .take()
-                .map(|settings| (self.draft.connection, settings));
+            self.cached_backup = self.draft.backup.take().map(|settings| (self.draft.connection, settings));
         }
         self.backup_preview = None;
     }
@@ -283,27 +257,17 @@ impl Dialog {
             return;
         }
         if let Some(connection) = connections.iter().find(|c| c.id == self.draft.connection) {
-            if connections
-                .iter()
-                .find(|c| c.id == previous)
-                .map(|c| c.driver)
-                != Some(connection.driver)
-            {
+            if connections.iter().find(|c| c.id == previous).map(|c| c.driver) != Some(connection.driver) {
                 self.draft.backup = Some(ScheduledBackup::new(connection.driver));
             }
-            self.draft.database = if connection.driver == Driver::Sqlite {
-                "main".into()
-            } else {
-                connection.database.clone()
-            };
+            self.draft.database = if connection.driver == Driver::Sqlite { "main".into() } else { connection.database.clone() };
         }
         self.cached_backup = None;
         self.backup_preview = None;
     }
 
     fn load_catalog(&mut self, ctx: &egui::Context, connection: &ConnectionConfig, force: bool) {
-        if self.catalog_receiver.is_some() || (!force && self.catalogs.contains_key(&connection.id))
-        {
+        if self.catalog_receiver.is_some() || (!force && self.catalogs.contains_key(&connection.id)) {
             return;
         }
         if matches!(connection.driver, Driver::Sqlite | Driver::Oracle) {
@@ -321,40 +285,26 @@ impl Dialog {
         let id = cfg.id;
         let (sender, receiver) = mpsc::channel();
         let ctx = ctx.clone();
-        let spawned = std::thread::Builder::new()
-            .name("scheduler-databases".into())
-            .spawn(move || {
-                let result = (|| -> anyhow::Result<Vec<String>> {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()?;
-                    runtime.block_on(async {
-                        tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                            let mut session = crate::db::Session::connect(&cfg).await?;
-                            session.list_databases().await
-                        })
-                        .await?
+        let spawned = std::thread::Builder::new().name("scheduler-databases".into()).spawn(move || {
+            let result = (|| -> anyhow::Result<Vec<String>> {
+                let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+                runtime.block_on(async {
+                    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                        let mut session = crate::db::Session::connect(&cfg).await?;
+                        session.list_databases().await
                     })
-                })();
-                let _ = sender.send((
-                    id,
-                    result.map_err(|_| {
-                        tr("Could not load databases. Check the saved connection.").into()
-                    }),
-                ));
-                ctx.request_repaint();
-            });
+                    .await?
+                })
+            })();
+            let _ = sender.send((id, result.map_err(|_| tr("Could not load databases. Check the saved connection.").into())));
+            ctx.request_repaint();
+        });
         match spawned {
             Ok(_) => {
                 self.catalog_receiver = Some(receiver);
                 self.catalog_error = None;
             }
-            Err(_) => {
-                self.catalog_error = Some((
-                    id,
-                    tr("Could not load databases. Check the saved connection.").into(),
-                ))
-            }
+            Err(_) => self.catalog_error = Some((id, tr("Could not load databases. Check the saved connection.").into())),
         }
     }
 
@@ -374,11 +324,7 @@ impl Dialog {
         self.confirm_save = true;
     }
 
-    fn submit_confirmation(
-        &mut self,
-        connections: &[ConnectionConfig],
-        action: &mut Option<Action>,
-    ) {
+    fn submit_confirmation(&mut self, connections: &[ConnectionConfig], action: &mut Option<Action>) {
         if let Some(seconds) = self.interval.seconds() {
             let mut job = self.draft.clone();
             job.interval_seconds = seconds;
@@ -392,11 +338,7 @@ impl Dialog {
         }
         self.confirm_save = false;
     }
-    fn apply_navigation(
-        &mut self,
-        connections: &[ConnectionConfig],
-        action: &mut Option<Action>,
-    ) -> bool {
+    fn apply_navigation(&mut self, connections: &[ConnectionConfig], action: &mut Option<Action>) -> bool {
         match self.pending_navigation.take() {
             Some(Navigation::Close) => return true,
             Some(Navigation::New) => {
@@ -425,76 +367,82 @@ impl Dialog {
         let (sender, receiver) = mpsc::channel();
         let ctx = ctx.clone();
         let selected = self.selected;
-        let spawned = std::thread::Builder::new()
-            .name("sql-scheduler-ui".into())
-            .spawn(move || {
-                let result = (|| -> anyhow::Result<Snapshot> {
-                    let mut store = Store::open(&database_path()?)?;
-                    let mut startup_error = None;
-                    let mut saved_running = None;
-                    let (selected, update, notice) = match action {
-                        Action::Load => (selected, DraftUpdate::Keep, None),
-                        Action::Save(job) => {
-                            validate(&job, now())?;
-                            let (id, error, running) = save_task(
-                                &mut store,
-                                &job,
-                                now(),
-                                service::enable,
-                                service::is_running,
-                            )?;
-                            saved_running = Some(running);
-                            startup_error = error;
-                            (Some(id), DraftUpdate::Replace, Some("Task saved"))
+        let spawned = std::thread::Builder::new().name("sql-scheduler-ui".into()).spawn(move || {
+            let result = (|| -> anyhow::Result<Snapshot> {
+                let path = database_path()?;
+                let _control = super::control::lock(&path)?;
+                let mut store = Store::open(&path)?;
+                let mut startup_error = None;
+                let mut saved_running = None;
+                let (selected, update, notice) = match action {
+                    Action::Load => (selected, DraftUpdate::Keep, None),
+                    Action::Save(job) => {
+                        validate(&job, now())?;
+                        let (id, error, running) = save_task(
+                            &mut store,
+                            &job,
+                            now(),
+                            || {
+                                service::enable()?;
+                                super::wake()
+                            },
+                            service::is_running,
+                        )?;
+                        saved_running = Some(running);
+                        startup_error = error;
+                        (Some(id), DraftUpdate::Replace, Some("Task saved"))
+                    }
+                    Action::Delete(id) => {
+                        store.delete(id)?;
+                        (None, DraftUpdate::Clear, Some("Task deleted"))
+                    }
+                    Action::Pause(id) => {
+                        store.pause(id)?;
+                        (Some(id), DraftUpdate::Pause, Some("Task paused"))
+                    }
+                    Action::DisableService => {
+                        store.pause_all()?;
+                        (selected, DraftUpdate::Pause, Some("All tasks paused; background scheduler stops after active tasks finish"))
+                    }
+                    Action::EnableService => {
+                        if !store.has_enabled()? {
+                            anyhow::bail!(tr("Enable a task before starting the background scheduler"));
                         }
-                        Action::Delete(id) => {
-                            store.delete(id)?;
-                            (None, DraftUpdate::Clear, Some("Task deleted"))
-                        }
-                        Action::Pause(id) => {
-                            store.pause(id)?;
-                            (Some(id), DraftUpdate::Pause, Some("Task paused"))
-                        }
-                        Action::EnableService => {
-                            service::enable()?;
-                            (
-                                selected,
-                                DraftUpdate::Keep,
-                                Some("Background scheduler enabled"),
-                            )
-                        }
-                    };
-                    Ok(Snapshot {
-                        jobs: store.jobs()?,
-                        runs: if let Some(id) = selected {
-                            store.runs(id)?
-                        } else {
-                            Vec::new()
-                        },
-                        selected,
-                        update,
-                        notice,
-                        startup_error,
-                        running: match saved_running {
-                            Some(running) => running,
-                            None => service::is_running()?,
-                        },
-                    })
+                        service::enable()?;
+                        (selected, DraftUpdate::Keep, Some("Background scheduler enabled"))
+                    }
+                };
+                let reconcile = (|| -> anyhow::Result<()> {
+                    if !store.has_enabled()? {
+                        service::unregister()?;
+                    }
+                    super::wake()
                 })();
-                let _ = sender.send(result.map_err(|error| format!("{error:#}")));
-                ctx.request_repaint();
-            });
+                if let Err(error) = reconcile {
+                    startup_error.get_or_insert_with(|| format!("{error:#}"));
+                }
+                Ok(Snapshot {
+                    jobs: store.jobs()?,
+                    runs: if let Some(id) = selected { store.runs(id)? } else { Vec::new() },
+                    selected,
+                    update,
+                    notice,
+                    startup_error,
+                    running: match saved_running {
+                        Some(running) => running,
+                        None => service::is_running()?,
+                    },
+                })
+            })();
+            let _ = sender.send(result.map_err(|error| format!("{error:#}")));
+            ctx.request_repaint();
+        });
         match spawned {
             Ok(_) => {
                 self.receiver = Some(receiver);
                 self.message = None;
             }
-            Err(error) => {
-                self.message = Some((
-                    format!("{}: {error}", tr("Could not start scheduler operation")),
-                    true,
-                ))
-            }
+            Err(error) => self.message = Some((format!("{}: {error}", tr("Could not start scheduler operation")), true)),
         }
     }
     fn poll(&mut self, connections: &[ConnectionConfig]) {
@@ -504,9 +452,7 @@ impl Dialog {
         let result = match receiver.try_recv() {
             Ok(result) => result,
             Err(mpsc::TryRecvError::Empty) => return,
-            Err(mpsc::TryRecvError::Disconnected) => {
-                Err(tr("Scheduler operation stopped unexpectedly").into())
-            }
+            Err(mpsc::TryRecvError::Disconnected) => Err(tr("Scheduler operation stopped unexpectedly").into()),
         };
         self.receiver = None;
         match result {
@@ -517,12 +463,7 @@ impl Dialog {
                 self.running = snapshot.running;
                 match snapshot.update {
                     DraftUpdate::Replace => {
-                        if let Some(job) = self
-                            .jobs
-                            .iter()
-                            .find(|job| Some(job.id) == self.selected)
-                            .cloned()
-                        {
+                        if let Some(job) = self.jobs.iter().find(|job| Some(job.id) == self.selected).cloned() {
                             self.set_draft(job);
                         }
                     }
@@ -537,17 +478,14 @@ impl Dialog {
                     DraftUpdate::Keep => {}
                 }
                 self.message = if let Some(error) = snapshot.startup_error {
-                    Some((
-                        crate::i18n::trf(
-                            "Task saved; background scheduler error: {error}",
-                            &[("error", &error)],
-                        ),
-                        true,
-                    ))
+                    let message = if snapshot.notice == Some("Task saved") {
+                        crate::i18n::trf("Task saved; background scheduler error: {error}", &[("error", &error)])
+                    } else {
+                        format!("{}: {error}", tr(snapshot.notice.unwrap_or("Could not start scheduler operation")))
+                    };
+                    Some((message, true))
                 } else {
-                    snapshot
-                        .notice
-                        .map(|notice| (tr(notice).to_string(), false))
+                    snapshot.notice.map(|notice| (tr(notice).to_string(), false))
                 };
             }
             Err(error) => self.message = Some((error, true)),
@@ -569,10 +507,7 @@ impl Dialog {
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.catalog_receiver = None;
-                    self.catalog_error = Some((
-                        self.draft.connection,
-                        tr("Could not load databases. Check the saved connection.").into(),
-                    ));
+                    self.catalog_error = Some((self.draft.connection, tr("Could not load databases. Check the saved connection.").into()));
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -581,10 +516,7 @@ impl Dialog {
         if self.draft.backup.is_some()
             && self.catalog_receiver.is_none()
             && !self.catalogs.contains_key(&self.draft.connection)
-            && self
-                .catalog_error
-                .as_ref()
-                .is_none_or(|(id, _)| *id != self.draft.connection)
+            && self.catalog_error.as_ref().is_none_or(|(id, _)| *id != self.draft.connection)
             && let Some(connection) = connections.iter().find(|c| c.id == self.draft.connection)
         {
             self.load_catalog(ctx, connection, false);
@@ -663,19 +595,38 @@ mod tests {
     use egui_kittest::kittest::Queryable;
 
     #[test]
+    fn turn_off_is_accessible_without_discarding_the_edited_task() {
+        let connection = ConnectionConfig::new(1, Driver::Sqlite);
+        let mut dialog = fixture();
+        dialog.running = true;
+        let original_sql = dialog.draft.sql.clone();
+        let mut first = true;
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(400.0, 300.0)).build_ui_state(
+            move |ui, state: &mut (Dialog, Option<Action>)| {
+                if std::mem::take(&mut first) {
+                    crate::ui::theme::install_fonts(ui.ctx());
+                    return;
+                }
+                state.0.render(ui.ctx(), std::slice::from_ref(&connection), &mut state.1);
+            },
+            (dialog, None),
+        );
+        h.run_steps(3);
+        let bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0));
+        assert!(bounds.contains_rect(h.get_by_label("Turn off").rect()));
+        h.get_by_label("Turn off").click();
+        h.run_steps(3);
+        assert!(matches!(h.state().1, Some(Action::DisableService)));
+        assert_eq!(h.state().0.draft.sql, original_sql);
+    }
+
+    #[test]
     fn save_persists_the_new_schedule_before_starting_the_service() {
         let mut store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let mut task = fixture().draft;
         task.id = store.save(&task, 100).unwrap();
         task.sql = "SELECT 42".into();
-        let saved = save_task(
-            &mut store,
-            &task,
-            200,
-            || anyhow::bail!("service unavailable"),
-            || Ok(false),
-        )
-        .unwrap();
+        let saved = save_task(&mut store, &task, 200, || anyhow::bail!("service unavailable"), || Ok(false)).unwrap();
         assert_eq!(saved.0, task.id);
         assert!(saved.1.unwrap().contains("service unavailable"));
         let jobs = store.jobs().unwrap();
@@ -709,10 +660,7 @@ mod tests {
 
     #[test]
     fn service_observes_the_saved_query_instead_of_the_overdue_query() {
-        let path = std::env::temp_dir().join(format!(
-            "datacraft-save-order-{}.sqlite",
-            uuid::Uuid::new_v4()
-        ));
+        let path = std::env::temp_dir().join(format!("datacraft-save-order-{}.sqlite", uuid::Uuid::new_v4()));
         let mut store = Store::open(&path).unwrap();
         let mut task = fixture().draft;
         task.id = store.save(&task, 100).unwrap();
@@ -740,14 +688,7 @@ mod tests {
         let mut store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let connections = [ConnectionConfig::new(1, Driver::Sqlite)];
         let mut dialog = fixture();
-        let (id, startup_error, running) = save_task(
-            &mut store,
-            &dialog.draft,
-            100,
-            || anyhow::bail!("unavailable"),
-            || Ok(false),
-        )
-        .unwrap();
+        let (id, startup_error, running) = save_task(&mut store, &dialog.draft, 100, || anyhow::bail!("unavailable"), || Ok(false)).unwrap();
         let (sender, receiver) = mpsc::channel();
         dialog.receiver = Some(receiver);
         sender
@@ -764,12 +705,7 @@ mod tests {
         dialog.poll(&connections);
         assert_eq!(dialog.draft.id, id);
         assert!(!dialog.dirty());
-        assert!(
-            dialog
-                .message
-                .as_ref()
-                .is_some_and(|(message, error)| *error && message.contains("Task saved"))
-        );
+        assert!(dialog.message.as_ref().is_some_and(|(message, error)| *error && message.contains("Task saved")));
         save_task(&mut store, &dialog.draft, 200, || Ok(()), || Ok(true)).unwrap();
         assert_eq!(store.jobs().unwrap().len(), 1);
     }
@@ -780,14 +716,7 @@ mod tests {
             let mut store = Store::open(std::path::Path::new(":memory:")).unwrap();
             let mut task = fixture().draft;
             task.enabled = enabled;
-            let (id, warning, running) = save_task(
-                &mut store,
-                &task,
-                100,
-                || Ok(()),
-                || anyhow::bail!("lock file unavailable"),
-            )
-            .unwrap();
+            let (id, warning, running) = save_task(&mut store, &task, 100, || Ok(()), || anyhow::bail!("lock file unavailable")).unwrap();
             assert_eq!(store.jobs().unwrap()[0].id, id);
             assert!(warning.unwrap().contains("lock file unavailable"));
             assert!(!running);
@@ -802,29 +731,23 @@ mod tests {
         dialog.draft.database.clear();
         dialog.catalogs.insert(1, vec!["listed".into()]);
         let mut first = true;
-        let mut h = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(600.0, 400.0))
-            .build_ui_state(
-                move |ui, dialog: &mut Dialog| {
-                    if std::mem::take(&mut first) {
-                        crate::ui::theme::install_fonts(ui.ctx());
-                        return;
-                    }
-                    dialog.database_picker(ui, &connection);
-                },
-                dialog,
-            );
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(600.0, 400.0)).build_ui_state(
+            move |ui, dialog: &mut Dialog| {
+                if std::mem::take(&mut first) {
+                    crate::ui::theme::install_fonts(ui.ctx());
+                    return;
+                }
+                dialog.database_picker(ui, &connection);
+            },
+            dialog,
+        );
         h.run_steps(3);
         h.get_by_role(Role::ComboBox).click();
         h.run_steps(3);
         h.get_by_role(Role::TextInput).click();
         h.run_steps(3);
-        assert!(
-            h.query_by_role(Role::TextInput).is_some(),
-            "Clicking the database editor must keep the picker open"
-        );
-        h.get_by_role(Role::TextInput)
-            .type_text(" unlisted database ");
+        assert!(h.query_by_role(Role::TextInput).is_some(), "Clicking the database editor must keep the picker open");
+        h.get_by_role(Role::TextInput).type_text(" unlisted database ");
         h.run_steps(3);
         assert_eq!(h.state().draft.database, " unlisted database ");
         h.get_by_label("listed").click();
@@ -839,18 +762,16 @@ mod tests {
         let mut dialog = fixture();
         dialog.set_draft(dialog.draft.clone());
         let mut first = true;
-        let mut h = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(1000.0, 760.0))
-            .build_ui_state(
-                move |ui, dialog: &mut Dialog| {
-                    if std::mem::take(&mut first) {
-                        crate::ui::theme::install_fonts(ui.ctx());
-                        return;
-                    }
-                    dialog.render(ui.ctx(), std::slice::from_ref(&connection), &mut None);
-                },
-                dialog,
-            );
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 760.0)).build_ui_state(
+            move |ui, dialog: &mut Dialog| {
+                if std::mem::take(&mut first) {
+                    crate::ui::theme::install_fonts(ui.ctx());
+                    return;
+                }
+                dialog.render(ui.ctx(), std::slice::from_ref(&connection), &mut None);
+            },
+            dialog,
+        );
         h.run_steps(3);
         h.get_by_value("SQLite 1").click();
         h.run_steps(3);
@@ -859,10 +780,7 @@ mod tests {
         assert!(h.state().pending_navigation.is_none());
         h.key_press(egui::Key::Escape);
         h.run_steps(3);
-        assert!(matches!(
-            h.state().pending_navigation,
-            Some(Navigation::Close)
-        ));
+        assert!(matches!(h.state().pending_navigation, Some(Navigation::Close)));
     }
 
     fn backup_fixture() -> Dialog {
@@ -899,25 +817,20 @@ mod tests {
     fn backup_confirmation_keeps_actions_visible_with_long_destinations() {
         let connection = ConnectionConfig::new(1, Driver::Sqlite);
         let mut dialog = backup_fixture();
-        dialog.draft.backup.as_mut().unwrap().folder = std::env::temp_dir()
-            .join("a".repeat(1500))
-            .to_string_lossy()
-            .into_owned();
+        dialog.draft.backup.as_mut().unwrap().folder = std::env::temp_dir().join("a".repeat(1500)).to_string_lossy().into_owned();
         dialog.open_confirmation(std::slice::from_ref(&connection));
         let size = egui::vec2(400.0, 300.0);
         let mut first = true;
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(size)
-            .build_ui_state(
-                move |ui, dialog: &mut Dialog| {
-                    if std::mem::take(&mut first) {
-                        crate::ui::theme::install_fonts(ui.ctx());
-                        return;
-                    }
-                    dialog.show(ui.ctx(), std::slice::from_ref(&connection));
-                },
-                dialog,
-            );
+        let mut harness = egui_kittest::Harness::builder().with_size(size).build_ui_state(
+            move |ui, dialog: &mut Dialog| {
+                if std::mem::take(&mut first) {
+                    crate::ui::theme::install_fonts(ui.ctx());
+                    return;
+                }
+                dialog.show(ui.ctx(), std::slice::from_ref(&connection));
+            },
+            dialog,
+        );
         harness.run_steps(3);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
         assert!(screen.contains_rect(harness.get_by_label("Keep editing").rect()));
@@ -936,18 +849,16 @@ mod tests {
         dialog.open_confirmation(std::slice::from_ref(&connection));
         let size = egui::vec2(400.0, 300.0);
         let mut first = true;
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(size)
-            .build_ui_state(
-                move |ui, dialog: &mut Dialog| {
-                    if std::mem::take(&mut first) {
-                        crate::ui::theme::install_fonts(ui.ctx());
-                        return;
-                    }
-                    dialog.show(ui.ctx(), std::slice::from_ref(&connection));
-                },
-                dialog,
-            );
+        let mut harness = egui_kittest::Harness::builder().with_size(size).build_ui_state(
+            move |ui, dialog: &mut Dialog| {
+                if std::mem::take(&mut first) {
+                    crate::ui::theme::install_fonts(ui.ctx());
+                    return;
+                }
+                dialog.show(ui.ctx(), std::slice::from_ref(&connection));
+            },
+            dialog,
+        );
         harness.run_steps(3);
         harness.get_by_label("SQL preview").scroll_to_me();
         harness.run_steps(4);
@@ -974,8 +885,7 @@ mod tests {
         let mut dialog = fixture();
         let sql = dialog.draft.sql.clone();
         dialog.select_backup(true, &connections);
-        dialog.draft.backup.as_mut().unwrap().folder =
-            std::env::temp_dir().to_string_lossy().into_owned();
+        dialog.draft.backup.as_mut().unwrap().folder = std::env::temp_dir().to_string_lossy().into_owned();
         let settings = dialog.draft.backup.clone();
         dialog.select_backup(false, &connections);
         assert_eq!(dialog.draft.sql, sql);
@@ -991,49 +901,35 @@ mod tests {
         dialog.open_confirmation(std::slice::from_ref(&connection));
         assert!(dialog.backup_preview.is_some());
         let mut first = true;
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(1000.0, 760.0))
-            .build_ui_state(
-                move |ui, dialog: &mut Dialog| {
-                    if std::mem::take(&mut first) {
-                        crate::ui::theme::install_fonts(ui.ctx());
-                        return;
-                    }
-                    dialog.show(ui.ctx(), std::slice::from_ref(&connection));
-                },
-                dialog,
-            );
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 760.0)).build_ui_state(
+            move |ui, dialog: &mut Dialog| {
+                if std::mem::take(&mut first) {
+                    crate::ui::theme::install_fonts(ui.ctx());
+                    return;
+                }
+                dialog.show(ui.ctx(), std::slice::from_ref(&connection));
+            },
+            dialog,
+        );
         harness.run_steps(3);
-        assert!(
-            harness
-                .query_by_label(
-                    "A full backup will be created automatically at the selected interval."
-                )
-                .is_some()
-        );
-        assert!(
-            harness
-                .query_by_label("This SQL will run automatically and may change data.")
-                .is_none()
-        );
+        assert!(harness.query_by_label("A full backup will be created automatically at the selected interval.").is_some());
+        assert!(harness.query_by_label("This SQL will run automatically and may change data.").is_none());
     }
 
     #[test]
     fn backup_form_shows_a_destination_folder() {
         let connection = ConnectionConfig::new(1, Driver::Sqlite);
         let mut first = true;
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(1000.0, 760.0))
-            .build_ui_state(
-                move |ui, dialog: &mut Dialog| {
-                    if std::mem::take(&mut first) {
-                        crate::ui::theme::install_fonts(ui.ctx());
-                        return;
-                    }
-                    dialog.show(ui.ctx(), std::slice::from_ref(&connection));
-                },
-                backup_fixture(),
-            );
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 760.0)).build_ui_state(
+            move |ui, dialog: &mut Dialog| {
+                if std::mem::take(&mut first) {
+                    crate::ui::theme::install_fonts(ui.ctx());
+                    return;
+                }
+                dialog.show(ui.ctx(), std::slice::from_ref(&connection));
+            },
+            backup_fixture(),
+        );
         harness.run_steps(3);
         assert!(harness.query_by_label("Destination folder").is_some());
     }
@@ -1073,32 +969,23 @@ mod tests {
 
     #[test]
     fn footer_actions_stay_visible_on_small_viewports() {
-        for size in [
-            egui::vec2(400.0, 300.0),
-            egui::vec2(780.0, 560.0),
-            egui::vec2(1000.0, 700.0),
-        ] {
+        for size in [egui::vec2(400.0, 300.0), egui::vec2(780.0, 560.0), egui::vec2(1000.0, 700.0)] {
             let connection = ConnectionConfig::new(1, Driver::Sqlite);
             let mut first = true;
-            let mut harness = egui_kittest::Harness::builder()
-                .with_size(size)
-                .build_ui_state(
-                    move |ui, dialog: &mut Dialog| {
-                        if std::mem::take(&mut first) {
-                            crate::ui::theme::install_fonts(ui.ctx());
-                            return;
-                        }
-                        dialog.show(ui.ctx(), std::slice::from_ref(&connection));
-                    },
-                    fixture(),
-                );
+            let mut harness = egui_kittest::Harness::builder().with_size(size).build_ui_state(
+                move |ui, dialog: &mut Dialog| {
+                    if std::mem::take(&mut first) {
+                        crate::ui::theme::install_fonts(ui.ctx());
+                        return;
+                    }
+                    dialog.show(ui.ctx(), std::slice::from_ref(&connection));
+                },
+                fixture(),
+            );
             harness.run_steps(3);
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
             for label in ["Save task", "Cancel"] {
-                assert!(
-                    screen.contains_rect(harness.get_by_label(label).rect()),
-                    "{label} is outside {size:?}"
-                );
+                assert!(screen.contains_rect(harness.get_by_label(label).rect()), "{label} is outside {size:?}");
             }
         }
     }
@@ -1108,26 +995,20 @@ mod tests {
         let connection = ConnectionConfig::new(1, Driver::Sqlite);
         let dialog = fixture();
         let mut first = true;
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(1000.0, 900.0))
-            .build_ui_state(
-                move |ui, dialog: &mut Dialog| {
-                    if std::mem::take(&mut first) {
-                        crate::ui::theme::install_fonts(ui.ctx());
-                        return;
-                    }
-                    dialog.show(ui.ctx(), std::slice::from_ref(&connection));
-                },
-                dialog,
-            );
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 900.0)).build_ui_state(
+            move |ui, dialog: &mut Dialog| {
+                if std::mem::take(&mut first) {
+                    crate::ui::theme::install_fonts(ui.ctx());
+                    return;
+                }
+                dialog.show(ui.ctx(), std::slice::from_ref(&connection));
+            },
+            dialog,
+        );
         harness.run_steps(2);
         harness.get_by_label("Save task").click();
         harness.run_steps(2);
-        assert!(
-            harness
-                .query_by_label("This SQL will run automatically and may change data.")
-                .is_some()
-        );
+        assert!(harness.query_by_label("This SQL will run automatically and may change data.").is_some());
         assert!(harness.state().receiver.is_none());
         harness.get_by_label("Keep editing").click();
         harness.run_steps(3);
@@ -1149,28 +1030,20 @@ mod tests {
     fn navigation_preserves_unsaved_sql() {
         let connection = ConnectionConfig::new(1, Driver::Sqlite);
         let mut first = true;
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(egui::vec2(1000.0, 760.0))
-            .build_ui_state(
-                move |ui, dialog: &mut Dialog| {
-                    if std::mem::take(&mut first) {
-                        crate::ui::theme::install_fonts(ui.ctx());
-                        return;
-                    }
-                    dialog.show(ui.ctx(), std::slice::from_ref(&connection));
-                },
-                fixture(),
-            );
-        harness.run_steps(3);
-        harness
-            .get_by_role_and_label(egui::accesskit::Role::Button, "New task")
-            .click();
-        harness.run_steps(3);
-        assert!(
-            harness
-                .query_by_label("Discard changes to this task?")
-                .is_some()
+        let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1000.0, 760.0)).build_ui_state(
+            move |ui, dialog: &mut Dialog| {
+                if std::mem::take(&mut first) {
+                    crate::ui::theme::install_fonts(ui.ctx());
+                    return;
+                }
+                dialog.show(ui.ctx(), std::slice::from_ref(&connection));
+            },
+            fixture(),
         );
+        harness.run_steps(3);
+        harness.get_by_role_and_label(egui::accesskit::Role::Button, "New task").click();
+        harness.run_steps(3);
+        assert!(harness.query_by_label("Discard changes to this task?").is_some());
         assert_eq!(harness.state().draft.sql, "DELETE FROM records");
         harness.get_by_label("Keep editing").click();
         harness.run_steps(3);
@@ -1186,17 +1059,7 @@ mod tests {
         for update in [DraftUpdate::Keep, DraftUpdate::Pause] {
             let (sender, receiver) = mpsc::channel();
             dialog.receiver = Some(receiver);
-            sender
-                .send(Ok(Snapshot {
-                    jobs: Vec::new(),
-                    runs: Vec::new(),
-                    selected: None,
-                    update,
-                    notice: None,
-                    startup_error: None,
-                    running: true,
-                }))
-                .unwrap();
+            sender.send(Ok(Snapshot { jobs: Vec::new(), runs: Vec::new(), selected: None, update, notice: None, startup_error: None, running: true })).unwrap();
             dialog.poll(&connections);
             assert_eq!(dialog.draft.sql, edited);
             assert!(dialog.dirty());
@@ -1212,18 +1075,16 @@ mod tests {
         dialog.confirm_save = true;
         let size = egui::vec2(400.0, 300.0);
         let mut first = true;
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(size)
-            .build_ui_state(
-                move |ui, dialog: &mut Dialog| {
-                    if std::mem::take(&mut first) {
-                        crate::ui::theme::install_fonts(ui.ctx());
-                        return;
-                    }
-                    dialog.show(ui.ctx(), std::slice::from_ref(&connection));
-                },
-                dialog,
-            );
+        let mut harness = egui_kittest::Harness::builder().with_size(size).build_ui_state(
+            move |ui, dialog: &mut Dialog| {
+                if std::mem::take(&mut first) {
+                    crate::ui::theme::install_fonts(ui.ctx());
+                    return;
+                }
+                dialog.show(ui.ctx(), std::slice::from_ref(&connection));
+            },
+            dialog,
+        );
         harness.run_steps(3);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
         assert!(screen.contains_rect(harness.get_by_label("Keep editing").rect()));
@@ -1240,49 +1101,30 @@ mod tests {
         dialog.set_draft(dialog.draft.clone());
         let size = egui::vec2(600.0, 560.0);
         let mut first = true;
-        let mut harness = egui_kittest::Harness::builder()
-            .with_size(size)
-            .build_ui_state(
-                move |ui, dialog: &mut Dialog| {
-                    if std::mem::take(&mut first) {
-                        crate::ui::theme::install_fonts(ui.ctx());
-                        return;
-                    }
-                    dialog.show(ui.ctx(), std::slice::from_ref(&connection));
-                },
-                dialog,
-            );
+        let mut harness = egui_kittest::Harness::builder().with_size(size).build_ui_state(
+            move |ui, dialog: &mut Dialog| {
+                if std::mem::take(&mut first) {
+                    crate::ui::theme::install_fonts(ui.ctx());
+                    return;
+                }
+                dialog.show(ui.ctx(), std::slice::from_ref(&connection));
+            },
+            dialog,
+        );
         harness.run_steps(3);
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
-        assert!(
-            screen.contains_rect(
-                harness
-                    .get_by_role_and_label(egui::accesskit::Role::Button, "New task")
-                    .rect()
-            )
-        );
+        assert!(screen.contains_rect(harness.get_by_role_and_label(egui::accesskit::Role::Button, "New task").rect()));
     }
 
     #[test]
     #[ignore = "Requires a GPU; renders backup task controls on synthetic state without connecting"]
     fn render_backup_tasks() {
-        let dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/scheduler-ui-snapshots");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/scheduler-ui-snapshots");
         std::fs::create_dir_all(&dir).unwrap();
-        for driver in [
-            Driver::Sqlite,
-            Driver::Postgres,
-            Driver::MsSql,
-            Driver::Oracle,
-            Driver::Snowflake,
-        ] {
+        for driver in [Driver::Sqlite, Driver::Postgres, Driver::MsSql, Driver::Oracle, Driver::Snowflake] {
             for dark in [false, true] {
                 let mut connection = ConnectionConfig::new(1, driver);
-                connection.database = if driver == Driver::Sqlite {
-                    "main".into()
-                } else {
-                    "shop".into()
-                };
+                connection.database = if driver == Driver::Sqlite { "main".into() } else { "shop".into() };
                 let mut dialog = fixture();
                 dialog.draft.sql.clear();
                 dialog.draft.name = "Daily database backup".into();
@@ -1291,10 +1133,7 @@ mod tests {
                 backup.folder = if driver == Driver::MsSql {
                     r"D:\DatabaseBackups".into()
                 } else {
-                    std::env::temp_dir()
-                        .join("DataCraft Backups")
-                        .to_string_lossy()
-                        .into_owned()
+                    std::env::temp_dir().join("DataCraft Backups").to_string_lossy().into_owned()
                 };
                 if driver == Driver::Oracle {
                     backup.directory = "BACKUP_DIR".into();
@@ -1303,28 +1142,22 @@ mod tests {
                 dialog.interval = Interval::from_seconds(86400);
                 dialog.catalogs.insert(1, vec![connection.database.clone()]);
                 let mut first = true;
-                let mut harness = egui_kittest::Harness::builder()
-                    .with_size(egui::vec2(1100.0, 800.0))
-                    .build_ui_state(
-                        move |ui, dialog: &mut Dialog| {
-                            if std::mem::take(&mut first) {
-                                crate::ui::theme::install_fonts(ui.ctx());
-                                crate::ui::theme::apply(ui.ctx(), dark);
-                                return;
-                            }
-                            dialog.show(ui.ctx(), std::slice::from_ref(&connection));
-                        },
-                        dialog,
-                    );
+                let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1100.0, 800.0)).build_ui_state(
+                    move |ui, dialog: &mut Dialog| {
+                        if std::mem::take(&mut first) {
+                            crate::ui::theme::install_fonts(ui.ctx());
+                            crate::ui::theme::apply(ui.ctx(), dark);
+                            return;
+                        }
+                        dialog.show(ui.ctx(), std::slice::from_ref(&connection));
+                    },
+                    dialog,
+                );
                 harness.run_steps(4);
                 harness
                     .render()
                     .unwrap()
-                    .save(dir.join(format!(
-                        "backup-{}-{}.png",
-                        driver.label().replace('/', "-"),
-                        if dark { "dark" } else { "light" }
-                    )))
+                    .save(dir.join(format!("backup-{}-{}.png", driver.label().replace('/', "-"), if dark { "dark" } else { "light" })))
                     .unwrap();
             }
         }
@@ -1333,8 +1166,7 @@ mod tests {
     #[test]
     #[ignore = "Requires a GPU; renders the scheduler on synthetic data without running SQL"]
     fn render_scheduler_manager() {
-        let dir =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/scheduler-ui-snapshots");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/scheduler-ui-snapshots");
         std::fs::create_dir_all(&dir).unwrap();
         for (dark, history) in [(false, false), (true, false), (false, true)] {
             let connection = ConnectionConfig::new(1, Driver::Sqlite);
@@ -1346,60 +1178,38 @@ mod tests {
             dialog.draft.next_run = 1793448300;
             dialog.set_draft(dialog.draft.clone());
             dialog.selected = Some(1);
-            dialog.jobs = vec![
-                dialog.draft.clone(),
-                Job {
-                    id: 2,
-                    name: "Archive old events".into(),
-                    enabled: false,
-                    ..dialog.draft.clone()
-                },
-            ];
+            dialog.jobs = vec![dialog.draft.clone(), Job { id: 2, name: "Archive old events".into(), enabled: false, ..dialog.draft.clone() }];
             dialog.running = true;
             dialog.runs = vec![
-                Run {
-                    id: 3,
-                    started: 1793448000,
-                    finished: Some(1793448002),
-                    status: "succeeded".into(),
-                    message: String::new(),
-                },
+                Run { id: 3, started: 1793448000, finished: Some(1793448002), status: "succeeded".into(), message: String::new() },
                 Run {
                     id: 2,
                     started: 1793447700,
                     finished: Some(1793447701),
                     status: "failed".into(),
-                    message:
-                        "The database was unavailable. Check the saved data source and try again."
-                            .into(),
+                    message: "The database was unavailable. Check the saved data source and try again.".into(),
                 },
             ];
             if history {
                 dialog.tab = Tab::History;
             }
             let mut first = true;
-            let mut harness = egui_kittest::Harness::builder()
-                .with_size(egui::vec2(1400.0, 900.0))
-                .build_ui_state(
-                    move |ui, dialog: &mut Dialog| {
-                        if std::mem::take(&mut first) {
-                            crate::ui::theme::install_fonts(ui.ctx());
-                            crate::ui::theme::apply(ui.ctx(), dark);
-                            return;
-                        }
-                        dialog.show(ui.ctx(), std::slice::from_ref(&connection));
-                    },
-                    dialog,
-                );
+            let mut harness = egui_kittest::Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_ui_state(
+                move |ui, dialog: &mut Dialog| {
+                    if std::mem::take(&mut first) {
+                        crate::ui::theme::install_fonts(ui.ctx());
+                        crate::ui::theme::apply(ui.ctx(), dark);
+                        return;
+                    }
+                    dialog.show(ui.ctx(), std::slice::from_ref(&connection));
+                },
+                dialog,
+            );
             harness.run_steps(4);
             harness
                 .render()
                 .unwrap()
-                .save(dir.join(format!(
-                    "scheduler-{}-{}.png",
-                    if dark { "dark" } else { "light" },
-                    if history { "history" } else { "configuration" }
-                )))
+                .save(dir.join(format!("scheduler-{}-{}.png", if dark { "dark" } else { "light" }, if history { "history" } else { "configuration" })))
                 .unwrap();
         }
     }

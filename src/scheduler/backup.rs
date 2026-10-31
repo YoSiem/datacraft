@@ -45,14 +45,10 @@ impl ScheduledBackup {
         if driver == Driver::Sqlite && database != "main" {
             bail!(tr("SQLite tasks can only use the main database"));
         }
-        if BackupRequest::local(driver)
-            && (!Path::new(&self.folder).is_absolute() || self.folder.chars().any(char::is_control))
-        {
+        if BackupRequest::local(driver) && (!Path::new(&self.folder).is_absolute() || self.folder.chars().any(char::is_control)) {
             bail!(tr("Choose an absolute backup folder path"));
         }
-        if driver == Driver::MsSql
-            && (!absolute_server_folder(&self.folder) || self.folder.chars().any(char::is_control))
-        {
+        if driver == Driver::MsSql && (!absolute_server_folder(&self.folder) || self.folder.chars().any(char::is_control)) {
             bail!(tr("Choose an absolute folder path on the database server"));
         }
         self.with_name(driver, database, "backup").validate(driver)
@@ -60,16 +56,8 @@ impl ScheduledBackup {
 
     pub fn request(&self, driver: Driver, database: &str) -> anyhow::Result<BackupRequest> {
         self.validate(driver, database)?;
-        let prefix: String = database
-            .chars()
-            .take(40)
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-            .collect();
-        let name = format!(
-            "{prefix}_{}_{}",
-            chrono::Utc::now().format("%Y%m%dT%H%M%S%3fZ"),
-            uuid::Uuid::new_v4().simple()
-        );
+        let prefix: String = database.chars().take(40).map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+        let name = format!("{prefix}_{}_{}", chrono::Utc::now().format("%Y%m%dT%H%M%S%3fZ"), uuid::Uuid::new_v4().simple());
         Ok(self.with_name(driver, database, &name))
     }
 
@@ -101,22 +89,11 @@ impl ScheduledBackup {
         };
         let filename = format!("{name}{extension}");
         request.destination = if BackupRequest::local(driver) {
-            Path::new(&self.folder)
-                .join(filename)
-                .to_string_lossy()
-                .into_owned()
+            Path::new(&self.folder).join(filename).to_string_lossy().into_owned()
         } else if driver == Driver::MsSql {
             let unix = self.folder.starts_with('/');
-            let separator = if unix || self.folder.contains('/') {
-                '/'
-            } else {
-                '\\'
-            };
-            let folder = if unix {
-                self.folder.trim_end_matches('/')
-            } else {
-                self.folder.trim_end_matches(['/', '\\'])
-            };
+            let separator = if unix || self.folder.contains('/') { '/' } else { '\\' };
+            let folder = if unix { self.folder.trim_end_matches('/') } else { self.folder.trim_end_matches(['/', '\\']) };
             format!("{folder}{separator}{filename}")
         } else {
             filename
@@ -130,19 +107,12 @@ fn absolute_server_folder(folder: &str) -> bool {
         return true;
     }
     let bytes = folder.as_bytes();
-    if bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && matches!(bytes[2], b'/' | b'\\')
-    {
+    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && matches!(bytes[2], b'/' | b'\\') {
         return true;
     }
     folder.strip_prefix(r"\\").is_some_and(|unc| {
         let mut parts = unc.split('\\');
-        parts
-            .next()
-            .is_some_and(|server| !server.is_empty() && server != "?" && server != ".")
-            && parts.next().is_some_and(|share| !share.is_empty())
+        parts.next().is_some_and(|server| !server.is_empty() && server != "?" && server != ".") && parts.next().is_some_and(|share| !share.is_empty())
     })
 }
 
@@ -183,21 +153,10 @@ mod tests {
 
         let mut postgres_backup = ScheduledBackup::new(Driver::Postgres);
         postgres_backup.folder.clone_from(&backup.folder);
-        let postgres = postgres_backup
-            .request(Driver::Postgres, "../../odd'/:db")
-            .unwrap();
-        assert_eq!(
-            Path::new(&postgres.destination).parent(),
-            Some(Path::new(&backup.folder))
-        );
-        let file = Path::new(&postgres.destination)
-            .file_name()
-            .unwrap()
-            .to_string_lossy();
-        assert!(
-            file.chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
-        );
+        let postgres = postgres_backup.request(Driver::Postgres, "../../odd'/:db").unwrap();
+        assert_eq!(Path::new(&postgres.destination).parent(), Some(Path::new(&backup.folder)));
+        let file = Path::new(&postgres.destination).file_name().unwrap().to_string_lossy();
+        assert!(file.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')));
     }
 
     #[test]
@@ -205,15 +164,9 @@ mod tests {
         let mut backup = ScheduledBackup::new(Driver::Sqlite);
         for folder in ["", "relative/backups", "bad\0folder"] {
             backup.folder = folder.into();
-            assert!(
-                backup.validate(Driver::Sqlite, "main").is_err(),
-                "{folder:?}"
-            );
+            assert!(backup.validate(Driver::Sqlite, "main").is_err(), "{folder:?}");
         }
-        backup.folder = std::env::temp_dir()
-            .join(uuid::Uuid::new_v4().to_string())
-            .to_string_lossy()
-            .into_owned();
+        backup.folder = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string()).to_string_lossy().into_owned();
         assert!(backup.validate(Driver::Sqlite, "main").is_ok());
         assert!(backup.request(Driver::Sqlite, "main").is_ok());
         assert!(!Path::new(&backup.folder).exists());
@@ -235,20 +188,10 @@ mod tests {
         ] {
             backup.folder = folder.into();
             let request = backup.request(Driver::MsSql, "shop").unwrap();
-            assert!(
-                request.destination.starts_with(prefix),
-                "{}",
-                request.destination
-            );
+            assert!(request.destination.starts_with(prefix), "{}", request.destination);
             assert!(request.destination.ends_with(".bak"));
         }
-        for folder in [
-            "relative",
-            r"C:backups",
-            r"\backups",
-            r"\\server",
-            r"\\server\",
-        ] {
+        for folder in ["relative", r"C:backups", r"\backups", r"\\server", r"\\server\"] {
             backup.folder = folder.into();
             assert!(backup.validate(Driver::MsSql, "shop").is_err(), "{folder}");
         }
@@ -268,10 +211,7 @@ mod tests {
         let snowflake = ScheduledBackup::new(Driver::Snowflake);
         let request = snowflake.request(Driver::Snowflake, "shop").unwrap();
         assert_eq!(request.directory, "PUBLIC");
-        assert!(
-            request.sql(Driver::Snowflake, "test").unwrap()[0]
-                .starts_with("CREATE BACKUP SET \"shop\".\"PUBLIC\".")
-        );
+        assert!(request.sql(Driver::Snowflake, "test").unwrap()[0].starts_with("CREATE BACKUP SET \"shop\".\"PUBLIC\"."));
     }
 
     #[test]
@@ -287,13 +227,7 @@ mod tests {
             backup.folder = std::env::temp_dir().to_string_lossy().into_owned();
             backup.archive = archive;
             backup.compress = compress;
-            assert!(
-                backup
-                    .request(driver, "shop")
-                    .unwrap()
-                    .destination
-                    .ends_with(extension)
-            );
+            assert!(backup.request(driver, "shop").unwrap().destination.ends_with(extension));
         }
     }
 }

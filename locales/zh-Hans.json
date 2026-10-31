@@ -1192,6 +1192,16 @@
     "The native backup utility must be installed on this computer.": "本机必须安装原生备份工具。",
     "Oracle backup tasks must use the saved connection service": "Oracle 备份任务必须使用已保存连接的服务",
     "The SQLite task lock became unusable": "SQLite 任务锁已无法使用",
-    "Task saved; background scheduler error: {error}": "任务已保存；后台调度器出错：{error}"
+    "Task saved; background scheduler error: {error}": "任务已保存；后台调度器出错：{error}",
+    "Could not disable Keychain prompts for the background scheduler": "无法禁用后台计划程序的钥匙串提示",
+    "Could not read saved credentials. Open DataCraft and authorize access to this data source's credentials before retrying the task": "无法读取已保存的凭据。请打开 DataCraft 并授权访问此数据源的凭据，然后重试任务",
+    "SQL task timed out": "SQL 任务超时",
+    "Database selection timed out": "选择数据库超时",
+    "Timed out waiting for another SQLite task": "等待其他 SQLite 任务超时",
+    "Earlier SQL task sessions are still stopping": "先前 SQL 任务的会话仍在停止中",
+    "Turn off": "关闭",
+    "Pause all tasks and remove automatic startup; active tasks will finish": "暂停所有任务并移除自动启动设置；正在执行的任务将继续完成",
+    "All tasks paused; background scheduler stops after active tasks finish": "所有任务已暂停；后台计划程序将在正在执行的任务完成后停止",
+    "Enable a task before starting the background scheduler": "请先启用一个任务，再启动后台计划程序"
   }
 }

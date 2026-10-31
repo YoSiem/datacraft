@@ -1192,6 +1192,16 @@
     "The native backup utility must be installed on this computer.": "Das native Sicherungsprogramm muss auf diesem Computer installiert sein.",
     "Oracle backup tasks must use the saved connection service": "Oracle-Sicherungen müssen den Dienst der gespeicherten Verbindung verwenden",
     "The SQLite task lock became unusable": "Die SQLite-Aufgabensperre ist nicht mehr verwendbar",
-    "Task saved; background scheduler error: {error}": "Aufgabe gespeichert; Fehler im Hintergrundplaner: {error}"
+    "Task saved; background scheduler error: {error}": "Aufgabe gespeichert; Fehler im Hintergrundplaner: {error}",
+    "Could not disable Keychain prompts for the background scheduler": "Schlüsselbund-Abfragen für den Hintergrundplaner konnten nicht deaktiviert werden",
+    "Could not read saved credentials. Open DataCraft and authorize access to this data source's credentials before retrying the task": "Gespeicherte Zugangsdaten konnten nicht gelesen werden. Öffnen Sie DataCraft und erlauben Sie den Zugriff auf die Zugangsdaten dieser Datenquelle, bevor Sie die Aufgabe erneut ausführen",
+    "SQL task timed out": "Zeitüberschreitung der SQL-Aufgabe",
+    "Database selection timed out": "Zeitüberschreitung bei der Datenbankauswahl",
+    "Timed out waiting for another SQLite task": "Zeitüberschreitung beim Warten auf eine andere SQLite-Aufgabe",
+    "Earlier SQL task sessions are still stopping": "Sitzungen früherer SQL-Aufgaben werden noch beendet",
+    "Turn off": "Deaktivieren",
+    "Pause all tasks and remove automatic startup; active tasks will finish": "Alle Aufgaben pausieren und den Autostart entfernen; aktive Aufgaben werden abgeschlossen",
+    "All tasks paused; background scheduler stops after active tasks finish": "Alle Aufgaben pausiert; der Hintergrundplaner beendet sich nach Abschluss der aktiven Aufgaben",
+    "Enable a task before starting the background scheduler": "Aktivieren Sie eine Aufgabe, bevor Sie den Hintergrundplaner starten"
   }
 }

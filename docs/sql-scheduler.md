@@ -61,8 +61,15 @@ not wake a sleeping computer or run while the user is signed out. Keep the
 DataCraft executable in its registered location. If it moves, open the scheduler
 and enable the background scheduler again. System startup registration failures
 are shown in the scheduler window. The background process and its startup entry
-remain installed when every task is paused or deleted; remove the per-user
-startup entry through the system's service or startup settings if desired.
+are removed automatically when no enabled tasks remain. **Turn off** in the
+scheduler window pauses all tasks and removes automatic startup. Executions already
+in progress may finish; the process exits after they complete or time out. Saving
+an enabled task registers and starts the scheduler again. Tasks and history are
+retained when the background scheduler is turned off.
+
+The process sleeps until the next deadline or a local wakeup from a task change;
+it does not open a write transaction every second while idle. Task changes and
+shutdown are coordinated so enabling a task cannot race with automatic removal.
 
 The first execution is due after the configured interval. Missed intervals are
 not replayed individually, and one task never runs concurrently with itself.
@@ -78,12 +85,24 @@ are not submitted after an error; statements inside a batch follow the database
 engine's error semantics. Results are discarded after the entire execution is
 checked, and tasks are not automatically wrapped in a transaction.
 
+Each SQL batch has a 30-minute timeout. Connecting and selecting a database have
+30 seconds each; cancellation is attempted for up to three seconds. Waiting for
+another operation on the same SQLite file is also limited to 30 minutes. A failed
+operation can leave native driver cleanup in progress; at most four SQL sessions
+may remain active or stopping, and their SQLite file locks stay held until cleanup
+ends. During shutdown, already failed sessions get up to ten more seconds to clean
+up. Cancellation is best-effort: a server-side statement may still finish after a
+timeout, so inspect the database before retrying a write.
+
 Background tasks use the saved data source settings and system credential
 store. They cannot answer password or SSH host-key prompts: save the required
 credentials and trust the SSH host key through the connection dialog first.
-An unavailable or locked credential store may prevent a run. Read-only data
+An unavailable or locked credential store may prevent a run. On macOS, the separate
+background process disables Keychain interaction, so it records an error instead
+of displaying an access prompt. Open DataCraft and authorize the saved connection's
+credentials before retrying, including after an application update. Read-only data
 sources retain their existing restrictions. The task's SQL and execution
 history are stored locally; do not put passwords or tokens in SQL text.
 
 [UI previews and reproduction instructions](screenshots/scheduler/README.md)
-show the scheduler and related workflow dialogs on synthetic test data.
+show the scheduler on synthetic test data.

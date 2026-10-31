@@ -1192,6 +1192,16 @@
     "The native backup utility must be installed on this computer.": "このコンピューターにネイティブバックアップツールが必要です。",
     "Oracle backup tasks must use the saved connection service": "Oracleバックアップは保存済み接続のサービスを使用する必要があります",
     "The SQLite task lock became unusable": "SQLiteタスクのロックが使用できなくなりました",
-    "Task saved; background scheduler error: {error}": "タスクを保存しました。バックグラウンドスケジューラーのエラー: {error}"
+    "Task saved; background scheduler error: {error}": "タスクを保存しました。バックグラウンドスケジューラーのエラー: {error}",
+    "Could not disable Keychain prompts for the background scheduler": "バックグラウンドスケジューラーのキーチェーン確認ダイアログを無効にできませんでした",
+    "Could not read saved credentials. Open DataCraft and authorize access to this data source's credentials before retrying the task": "保存された認証情報を読み取れませんでした。DataCraft を開き、このデータソースの認証情報へのアクセスを許可してからタスクを再実行してください",
+    "SQL task timed out": "SQL タスクがタイムアウトしました",
+    "Database selection timed out": "データベースの選択がタイムアウトしました",
+    "Timed out waiting for another SQLite task": "別の SQLite タスクの待機がタイムアウトしました",
+    "Earlier SQL task sessions are still stopping": "以前の SQL タスクのセッションはまだ停止処理中です",
+    "Turn off": "無効にする",
+    "Pause all tasks and remove automatic startup; active tasks will finish": "すべてのタスクを一時停止し、自動起動を解除します。実行中のタスクは完了まで続行します",
+    "All tasks paused; background scheduler stops after active tasks finish": "すべてのタスクを一時停止しました。実行中のタスクが完了するとバックグラウンドスケジューラーが停止します",
+    "Enable a task before starting the background scheduler": "バックグラウンドスケジューラーを起動する前にタスクを有効にしてください"
   }
 }

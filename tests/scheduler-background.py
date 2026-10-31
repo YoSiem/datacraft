@@ -5,6 +5,7 @@ import os
 from contextlib import closing
 from pathlib import Path
 import sqlite3
+import socket
 import subprocess
 import sys
 import tempfile
@@ -29,34 +30,37 @@ with tempfile.TemporaryDirectory(prefix="datacraft-scheduler-") as temp:
     env = os.environ.copy()
     env["DATACRAFT_TEST_DATA_DIR"] = str(profile)
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    # Initialize the schema without registering startup; an empty scheduler exits cleanly.
+    subprocess.run([str(executable), "--scheduler"], env=env, creationflags=flags, timeout=20, check=True)
+    schedule = profile / "scheduler.sqlite"
+    with closing(sqlite3.connect(schedule)) as db, db:
+        sql_id = db.execute(
+            "INSERT INTO jobs(name, connection, database_name, sql_text, interval_seconds, enabled, next_run) VALUES (?, ?, ?, ?, ?, 1, ?)",
+            ("test", identity, "main", "UPDATE records SET value=value+1", 3, int(time.time()) + 3600),
+        ).lastrowid
+        backup_id = db.execute(
+            "INSERT INTO jobs(name, connection, database_name, sql_text, interval_seconds, enabled, next_run, backup_json) VALUES (?, ?, ?, '', ?, 1, ?, ?)",
+            ("backup", identity, "main", 3, int(time.time()) + 3600,
+             json.dumps({"folder": str(backups), "utility": "", "compress": False, "archive": False, "directory": ""})),
+        ).lastrowid
     worker = subprocess.Popen([str(executable), "--scheduler"], env=env, creationflags=flags)
+    def wake():
+        endpoint = profile / "scheduler.wake"
+        try:
+            port = int(endpoint.read_text().strip())
+        except FileNotFoundError:
+            return
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+            sender.sendto(b"1", ("127.0.0.1", port))
     try:
-        schedule = profile / "scheduler.sqlite"
         deadline = time.monotonic() + 20
-        while not schedule.exists() and time.monotonic() < deadline:
+        while not (profile / "scheduler.wake").exists() or not (profile / "scheduler.wake").read_text().strip():
             assert worker.poll() is None, f"worker exited: {worker.returncode}"
+            assert time.monotonic() < deadline, "scheduler did not publish its wakeup endpoint"
             time.sleep(0.1)
-        assert schedule.exists(), "scheduler database was not created"
-        deadline = time.monotonic() + 10
-        while True:
-            try:
-                with closing(sqlite3.connect(schedule)) as db, db:
-                    sql_id = db.execute(
-                        "INSERT INTO jobs(name, connection, database_name, sql_text, interval_seconds, enabled, next_run) VALUES (?, ?, ?, ?, ?, 1, ?)",
-                        ("test", identity, "main", "UPDATE records SET value=value+1", 3, int(time.time())),
-                    ).lastrowid
-                    backup_id = db.execute(
-                        "INSERT INTO jobs(name, connection, database_name, sql_text, interval_seconds, enabled, next_run, backup_json) VALUES (?, ?, ?, '', ?, 1, ?, ?)",
-                        (
-                            "backup", identity, "main", 3, int(time.time()),
-                            json.dumps({"folder": str(backups), "utility": "", "compress": False, "archive": False, "directory": ""}),
-                        ),
-                    ).lastrowid
-                break
-            except sqlite3.OperationalError:
-                if time.monotonic() >= deadline:
-                    raise
-                time.sleep(0.1)
+        with closing(sqlite3.connect(schedule)) as db, db:
+            db.execute("UPDATE jobs SET next_run=?", (int(time.time()),))
+        wake()  # The original deadline was one hour away; this must interrupt the wait.
         duplicate = subprocess.run([str(executable), "--scheduler"], env=env, creationflags=flags, timeout=10)
         assert duplicate.returncode == 0, "second scheduler did not exit cleanly"
         deadline = time.monotonic() + 20
@@ -70,6 +74,7 @@ with tempfile.TemporaryDirectory(prefix="datacraft-scheduler-") as temp:
             time.sleep(0.1)
         with closing(sqlite3.connect(schedule)) as db, db:
             db.execute("UPDATE jobs SET enabled=0")
+        wake()
         deadline = time.monotonic() + 10
         while True:
             with closing(sqlite3.connect(schedule)) as db:
@@ -91,6 +96,8 @@ with tempfile.TemporaryDirectory(prefix="datacraft-scheduler-") as temp:
                 assert 0 <= value <= len(sql_runs), value
         with closing(sqlite3.connect(sample)) as db:
             assert db.execute("SELECT value FROM records").fetchone() == (len(sql_runs),)
+        assert worker.wait(timeout=10) == 0, "idle scheduler did not exit cleanly"
     finally:
-        worker.terminate()
-        worker.wait(timeout=10)
+        if worker.poll() is None:
+            worker.terminate()
+            worker.wait(timeout=10)

@@ -1192,6 +1192,16 @@
     "The native backup utility must be installed on this computer.": "Natywne narzędzie backupu musi być zainstalowane na tym komputerze.",
     "Oracle backup tasks must use the saved connection service": "Kopie Oracle muszą używać usługi z zapisanego połączenia",
     "The SQLite task lock became unusable": "Blokada zadań SQLite przestała działać",
-    "Task saved; background scheduler error: {error}": "Zadanie zapisane; błąd harmonogramu w tle: {error}"
+    "Task saved; background scheduler error: {error}": "Zadanie zapisane; błąd harmonogramu w tle: {error}",
+    "Could not disable Keychain prompts for the background scheduler": "Nie udało się wyłączyć monitów pęku kluczy dla harmonogramu działającego w tle",
+    "Could not read saved credentials. Open DataCraft and authorize access to this data source's credentials before retrying the task": "Nie udało się odczytać zapisanych danych logowania. Otwórz DataCraft i zezwól na dostęp do danych logowania tego źródła danych przed ponownym uruchomieniem zadania",
+    "SQL task timed out": "Przekroczono limit czasu zadania SQL",
+    "Database selection timed out": "Przekroczono limit czasu wyboru bazy danych",
+    "Timed out waiting for another SQLite task": "Przekroczono limit czasu oczekiwania na inne zadanie SQLite",
+    "Earlier SQL task sessions are still stopping": "Sesje wcześniejszych zadań SQL nadal są zamykane",
+    "Turn off": "Wyłącz",
+    "Pause all tasks and remove automatic startup; active tasks will finish": "Wstrzymaj wszystkie zadania i wyłącz automatyczne uruchamianie; aktywne zadania zostaną dokończone",
+    "All tasks paused; background scheduler stops after active tasks finish": "Wszystkie zadania wstrzymano; harmonogram w tle zatrzyma się po zakończeniu aktywnych zadań",
+    "Enable a task before starting the background scheduler": "Włącz zadanie przed uruchomieniem harmonogramu w tle"
   }
 }

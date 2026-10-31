@@ -1192,6 +1192,16 @@
     "The native backup utility must be installed on this computer.": "L’utilitaire natif de sauvegarde doit être installé sur cet ordinateur.",
     "Oracle backup tasks must use the saved connection service": "Les sauvegardes Oracle doivent utiliser le service de la connexion enregistrée",
     "The SQLite task lock became unusable": "Le verrou des tâches SQLite est devenu inutilisable",
-    "Task saved; background scheduler error: {error}": "Tâche enregistrée ; erreur du planificateur en arrière-plan : {error}"
+    "Task saved; background scheduler error: {error}": "Tâche enregistrée ; erreur du planificateur en arrière-plan : {error}",
+    "Could not disable Keychain prompts for the background scheduler": "Impossible de désactiver les demandes d’autorisation du trousseau pour le planificateur en arrière-plan",
+    "Could not read saved credentials. Open DataCraft and authorize access to this data source's credentials before retrying the task": "Impossible de lire les identifiants enregistrés. Ouvrez DataCraft et autorisez l’accès aux identifiants de cette source de données avant de relancer la tâche",
+    "SQL task timed out": "Le délai de la tâche SQL est dépassé",
+    "Database selection timed out": "Le délai de sélection de la base de données est dépassé",
+    "Timed out waiting for another SQLite task": "Le délai d’attente d’une autre tâche SQLite est dépassé",
+    "Earlier SQL task sessions are still stopping": "Les sessions des tâches SQL précédentes sont encore en cours d’arrêt",
+    "Turn off": "Désactiver",
+    "Pause all tasks and remove automatic startup; active tasks will finish": "Mettre toutes les tâches en pause et supprimer le démarrage automatique ; les tâches actives se termineront",
+    "All tasks paused; background scheduler stops after active tasks finish": "Toutes les tâches sont en pause ; le planificateur en arrière-plan s’arrêtera à la fin des tâches actives",
+    "Enable a task before starting the background scheduler": "Activez une tâche avant de démarrer le planificateur en arrière-plan"
   }
 }
