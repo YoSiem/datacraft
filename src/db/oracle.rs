@@ -433,9 +433,32 @@ fn run(conn: &Connection, sql: &str, display: String, max_rows: usize) -> Result
         }
         // The console works in auto-commit mode.
         conn.commit()?;
+        if matches!(leading_words(sql, 1).first().map(String::as_str), Some("BEGIN" | "DECLARE")) {
+            let lines = dbms_output(conn, max_rows)?;
+            if !lines.is_empty() {
+                rs.columns = vec!["DBMS_OUTPUT".into()];
+                rs.truncated = lines.len() >= max_rows;
+                rs.rows = lines.into_iter().map(|line| vec![line]).collect();
+            }
+        }
     }
     rs.elapsed = start.elapsed();
     Ok(rs)
+}
+
+/// Lines an anonymous block wrote with `DBMS_OUTPUT` (if the session enabled it), at most
+/// `max_rows`.
+fn dbms_output(conn: &Connection, max_rows: usize) -> Result<Vec<Option<String>>, oracle::Error> {
+    let mut stmt = conn.statement("BEGIN DBMS_OUTPUT.GET_LINE(:1, :2); END;").build()?;
+    let mut lines = Vec::new();
+    while lines.len() < max_rows {
+        stmt.execute(&[&OracleType::Varchar2(32767), &OracleType::Int64])?;
+        if stmt.bind_value::<_, i64>(2)? != 0 {
+            break;
+        }
+        lines.push(stmt.bind_value::<_, Option<String>>(1)?);
+    }
+    Ok(lines)
 }
 
 /// Runs the statements without committing in between; with `single_row`, each must affect

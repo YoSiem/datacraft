@@ -62,6 +62,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+mod routines;
 mod views;
 
 #[cfg(all(test, target_os = "windows"))]
@@ -131,11 +132,21 @@ pub struct ConnState {
     pub db_errors: HashMap<String, String>,
     /// The "Users" / "Roles" folder.
     pub users: crate::ui::user_dialog::UsersNode,
+    /// Procedures and functions of each database (engines that have them).
+    pub routines: HashMap<String, crate::db::routines::RoutineList>,
 }
 
 impl ConnState {
     pub fn new(cfg: ConnectionConfig) -> Self {
-        Self { cfg, status: ConnStatus::Disconnected, databases: Vec::new(), loading: HashSet::new(), db_errors: HashMap::new(), users: Default::default() }
+        Self {
+            cfg,
+            status: ConnStatus::Disconnected,
+            databases: Vec::new(),
+            loading: HashSet::new(),
+            db_errors: HashMap::new(),
+            users: Default::default(),
+            routines: HashMap::new(),
+        }
     }
 
     fn clear(&mut self) {
@@ -143,6 +154,7 @@ impl ConnState {
         self.loading.clear();
         self.db_errors.clear();
         self.users = Default::default();
+        self.routines.clear();
     }
 
     /// The connection's default database (if connected).
@@ -246,6 +258,8 @@ struct Persisted {
     zoom: f32,
     /// Interface language (`None` = the system one).
     lang: Option<Lang>,
+    render_mode: crate::ui::performance::RenderMode,
+    show_frame_stats: bool,
     /// Look for a newer release on GitHub a little after launch.
     check_updates: bool,
     /// "Skip this version": no notice until a newer one.
@@ -270,6 +284,8 @@ impl Default for Persisted {
             show_results: true,
             zoom: 1.0,
             lang: None,
+            render_mode: Default::default(),
+            show_frame_stats: false,
             check_updates: true,
             skipped_version: None,
         }
@@ -301,6 +317,8 @@ pub struct DataCraftApp {
     drop: Option<DropDialog>,
     /// "New View" / "Edit View" dialog and pending view definitions.
     views: views::ViewState,
+    /// Procedure and function dialogs and pending definitions.
+    routines: routines::RoutineState,
     import: Option<ImportDialog>,
     /// "Copy Table To…".
     copy: Option<CopyDialog>,
@@ -347,6 +365,8 @@ pub struct DataCraftApp {
     demo_window: Option<egui::Vec2>,
     /// Language chosen by the user (`None` = follow the system).
     lang: Option<Lang>,
+    /// Low-power rendering for software adapters and Remote Desktop.
+    perf: crate::ui::performance::Performance,
 }
 
 impl DataCraftApp {
@@ -396,6 +416,7 @@ impl DataCraftApp {
             create: None,
             drop: None,
             views: Default::default(),
+            routines: Default::default(),
             import: None,
             copy: None,
             mask_export: None,
@@ -428,6 +449,7 @@ impl DataCraftApp {
             demo_explorer_w: None,
             demo_window: None,
             lang: persisted.lang,
+            perf: crate::ui::performance::Performance::new(cc.wgpu_render_state.as_ref(), persisted.render_mode, persisted.show_frame_stats),
         };
         app.restore_tabs(persisted.consoles, persisted.active);
         if app.check_updates && demo.is_none() {
@@ -438,6 +460,7 @@ impl DataCraftApp {
         }
         theme::apply(&cc.egui_ctx, app.dark);
         app.applied_dark = Some(app.dark);
+        app.perf.apply_style(&cc.egui_ctx);
         // Keyboard zoom is handled by the app (⌘= / ⌘- / ⌘0) so it is not applied twice.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         cc.egui_ctx.set_zoom_factor(app.zoom);
@@ -794,6 +817,8 @@ impl DataCraftApp {
                                 if let Some(d) = c.databases.iter_mut().find(|d| d.name == db) {
                                     d.schemas = Some(schemas);
                                 }
+                                // The routines follow in their own query: the tree shows first.
+                                self.load_routines(conn, &db);
                             }
                             Err(e) => {
                                 c.db_errors.insert(db.clone(), e);
@@ -852,6 +877,8 @@ impl DataCraftApp {
                 Response::ChangesApplied { console, result } => self.changes_applied(console, result),
                 Response::DdlDone { conn, result } => self.ddl_done(conn, result),
                 Response::ViewDefinition { conn, request_id, result } => self.view_definition_received(conn, request_id, result),
+                Response::RoutinesLoaded { conn, db, result } => self.routines_loaded(conn, db, result),
+                Response::RoutineDefinition { conn, request_id, result } => self.routine_definition_received(conn, request_id, result.map(|d| *d)),
                 Response::TableDetails { request_id, result } => self.modify_loaded(request_id, result.map(|d| *d)),
                 Response::TableCopied { request_id, result } => self.copy_done(request_id, result),
                 Response::Users { conn, result } => self.users_response(conn, result),
@@ -1521,6 +1548,11 @@ impl DataCraftApp {
                 }
                 ExplorerAction::NewView { conn, db, schema } => self.open_new_view(conn, db, schema),
                 ExplorerAction::EditView(t) => self.open_edit_view(t),
+                ExplorerAction::NewRoutine { conn, db, schema, kind } => self.open_new_routine(conn, db, schema, kind),
+                ExplorerAction::EditRoutine(r) => self.open_edit_routine(r),
+                ExplorerAction::ExecuteRoutine(r) => self.open_execute_routine(r),
+                ExplorerAction::RoutineDdl(r) => self.request_routine_ddl(r),
+                ExplorerAction::DropRoutine(r) => self.open_drop_routine(r),
                 ExplorerAction::DropDatabase(id, db) => {
                     if self.refuse_read_only(id) {
                         continue;
@@ -2041,7 +2073,7 @@ impl DataCraftApp {
 
     /// Reply to the "New Database" / "New Table" dialog's statements.
     fn ddl_done(&mut self, conn: ConnId, result: Result<(), String>) {
-        if self.view_ddl_done(conn, &result) {
+        if self.view_ddl_done(conn, &result) || self.routine_ddl_done(conn, &result) {
             return;
         }
         if self.modify.as_ref().is_some_and(|d| d.conn == conn && d.running) {
@@ -2111,7 +2143,12 @@ impl DataCraftApp {
         }
         let Some(d) = self.drop.take() else { return };
         let conn = d.conn;
+        if let Some(r) = d.routine_ref() {
+            self.routine_dropped(&r);
+            return;
+        }
         match d.kind {
+            DropKind::Procedure | DropKind::Function => {}
             DropKind::Database => {
                 if let Some(c) = self.conn_mut(conn) {
                     c.databases.retain(|x| x.name != d.db);
@@ -2403,6 +2440,7 @@ impl DataCraftApp {
             || self.confirm_analyze.is_some()
             || self.create.is_some()
             || self.views.dialog.is_some()
+            || self.routines.is_open()
             || self.drop.is_some()
             || self.import.is_some()
             || self.copy.is_some()
@@ -3324,6 +3362,7 @@ impl DataCraftApp {
         }
 
         self.view_dialog(ctx);
+        self.routine_dialogs(ctx);
         self.user_dialog_ui(ctx);
 
         if let Some(d) = self.import.as_mut() {
@@ -3577,6 +3616,8 @@ impl DataCraftApp {
                 });
                 ui.checkbox(&mut self.auto_complete, tr("Show completions while typing"));
                 ui.checkbox(&mut self.check_updates, tr("Check for updates at startup"));
+                ui.separator();
+                self.perf.settings_ui(ui);
                 ui.add_space(12.0);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| theme::primary_button(ui, tr("Close")).clicked())
                     .inner
@@ -4038,6 +4079,7 @@ fn apply_execution(
 
 impl eframe::App for DataCraftApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.perf.begin_frame();
         // First of all: the menu's edit commands are injected as events of this frame.
         self.menu_commands(ctx);
         self.handle_responses();
@@ -4045,13 +4087,18 @@ impl eframe::App for DataCraftApp {
             ctx.set_zoom_factor(self.zoom);
             self.applied_zoom = Some(self.zoom);
         }
-        if self.applied_dark != Some(self.dark) {
+        if self.applied_dark != Some(self.dark) || self.perf.style_outdated() {
             theme::apply(ctx, self.dark);
             self.applied_dark = Some(self.dark);
+            self.perf.apply_style(ctx);
         }
     }
 
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.perf.instant_wheel(ctx, raw_input);
+    }
+
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if let Some(size) = self.demo_window.take() {
             ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(vec2(400.0, 300.0)));
@@ -4110,6 +4157,7 @@ impl eframe::App for DataCraftApp {
             .show(ui, |ui| self.central(ui));
         self.dialogs(&ctx);
         if cfg!(target_os = "windows") { crate::ui::window_chrome::resize_edges(&ctx); }
+        self.perf.stats_overlay(&ctx, frame.info().cpu_usage);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -4140,6 +4188,8 @@ impl eframe::App for DataCraftApp {
             show_results: self.show_results,
             zoom: self.zoom,
             lang: self.lang,
+            render_mode: self.perf.mode,
+            show_frame_stats: self.perf.show_stats,
             check_updates: self.check_updates,
             skipped_version: self.skipped_version.clone(),
         };
@@ -4162,12 +4212,13 @@ mod tests {
             active: 1, next_console_id: 5, console_counter: 4, result_salt: 0,
             explorer: ExplorerState::default(), backup: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(),
             save_on_row_change: false,
-            dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
+            dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), routines: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
             show_about: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
             zoom: 1.0, applied_zoom: None, preview: None, confirm_discard: None,
             demo_explorer_w: None, demo_window: None, lang: None,
+            perf: crate::ui::performance::Performance::new(None, Default::default(), false),
             modify: None,
         }
     }
