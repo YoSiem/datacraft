@@ -234,17 +234,23 @@ pub struct Run {
 
 pub struct Store(Connection);
 
+#[cfg(unix)]
+fn create_store_file(path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)?;
+    Ok(())
+}
+
 impl Store {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         #[cfg(unix)]
         if path != Path::new(":memory:") {
-            use std::os::unix::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .mode(0o600)
-                .open(path)?;
+            create_store_file(path)?;
         }
         let mut db = Connection::open(path)
             .with_context(|| format!("open schedule database {}", path.display()))?;
@@ -502,7 +508,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn opening_another_store_preserves_active_sqlite_locks() {
+    fn initializing_an_existing_store_file_preserves_active_sqlite_locks() {
         let root =
             std::env::temp_dir().join(format!("datacraft-scheduler-lock-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
@@ -514,22 +520,8 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get::<_, i64>(0))
             .unwrap();
 
-        // A second handle must not release the first handle's process-wide read lock.
-        let second = Store::open(&path);
-        if let Err(error) = &second {
-            assert!(
-                matches!(
-                    error.downcast_ref::<rusqlite::Error>(),
-                    Some(rusqlite::Error::SqliteFailure(error, _))
-                        if matches!(
-                            error.code,
-                            rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
-                        )
-                ),
-                "unexpected error opening the second store: {error:#}"
-            );
-        }
-        drop(second);
+        // Probe the initialization boundary before a second SQLite connection can reacquire locks.
+        create_store_file(&path).unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
