@@ -62,6 +62,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+mod routines;
 mod views;
 
 #[cfg(all(test, target_os = "windows"))]
@@ -131,11 +132,21 @@ pub struct ConnState {
     pub db_errors: HashMap<String, String>,
     /// The "Users" / "Roles" folder.
     pub users: crate::ui::user_dialog::UsersNode,
+    /// Procedures and functions of each database (engines that have them).
+    pub routines: HashMap<String, crate::db::routines::RoutineList>,
 }
 
 impl ConnState {
     pub fn new(cfg: ConnectionConfig) -> Self {
-        Self { cfg, status: ConnStatus::Disconnected, databases: Vec::new(), loading: HashSet::new(), db_errors: HashMap::new(), users: Default::default() }
+        Self {
+            cfg,
+            status: ConnStatus::Disconnected,
+            databases: Vec::new(),
+            loading: HashSet::new(),
+            db_errors: HashMap::new(),
+            users: Default::default(),
+            routines: HashMap::new(),
+        }
     }
 
     fn clear(&mut self) {
@@ -143,6 +154,7 @@ impl ConnState {
         self.loading.clear();
         self.db_errors.clear();
         self.users = Default::default();
+        self.routines.clear();
     }
 
     /// The connection's default database (if connected).
@@ -305,6 +317,8 @@ pub struct DataCraftApp {
     drop: Option<DropDialog>,
     /// "New View" / "Edit View" dialog and pending view definitions.
     views: views::ViewState,
+    /// Procedure and function dialogs and pending definitions.
+    routines: routines::RoutineState,
     import: Option<ImportDialog>,
     /// "Copy Table To…".
     copy: Option<CopyDialog>,
@@ -402,6 +416,7 @@ impl DataCraftApp {
             create: None,
             drop: None,
             views: Default::default(),
+            routines: Default::default(),
             import: None,
             copy: None,
             mask_export: None,
@@ -802,6 +817,8 @@ impl DataCraftApp {
                                 if let Some(d) = c.databases.iter_mut().find(|d| d.name == db) {
                                     d.schemas = Some(schemas);
                                 }
+                                // The routines follow in their own query: the tree shows first.
+                                self.load_routines(conn, &db);
                             }
                             Err(e) => {
                                 c.db_errors.insert(db.clone(), e);
@@ -860,6 +877,8 @@ impl DataCraftApp {
                 Response::ChangesApplied { console, result } => self.changes_applied(console, result),
                 Response::DdlDone { conn, result } => self.ddl_done(conn, result),
                 Response::ViewDefinition { conn, request_id, result } => self.view_definition_received(conn, request_id, result),
+                Response::RoutinesLoaded { conn, db, result } => self.routines_loaded(conn, db, result),
+                Response::RoutineDefinition { conn, request_id, result } => self.routine_definition_received(conn, request_id, result.map(|d| *d)),
                 Response::TableDetails { request_id, result } => self.modify_loaded(request_id, result.map(|d| *d)),
                 Response::TableCopied { request_id, result } => self.copy_done(request_id, result),
                 Response::Users { conn, result } => self.users_response(conn, result),
@@ -1529,6 +1548,11 @@ impl DataCraftApp {
                 }
                 ExplorerAction::NewView { conn, db, schema } => self.open_new_view(conn, db, schema),
                 ExplorerAction::EditView(t) => self.open_edit_view(t),
+                ExplorerAction::NewRoutine { conn, db, schema, kind } => self.open_new_routine(conn, db, schema, kind),
+                ExplorerAction::EditRoutine(r) => self.open_edit_routine(r),
+                ExplorerAction::ExecuteRoutine(r) => self.open_execute_routine(r),
+                ExplorerAction::RoutineDdl(r) => self.request_routine_ddl(r),
+                ExplorerAction::DropRoutine(r) => self.open_drop_routine(r),
                 ExplorerAction::DropDatabase(id, db) => {
                     if self.refuse_read_only(id) {
                         continue;
@@ -2049,7 +2073,7 @@ impl DataCraftApp {
 
     /// Reply to the "New Database" / "New Table" dialog's statements.
     fn ddl_done(&mut self, conn: ConnId, result: Result<(), String>) {
-        if self.view_ddl_done(conn, &result) {
+        if self.view_ddl_done(conn, &result) || self.routine_ddl_done(conn, &result) {
             return;
         }
         if self.modify.as_ref().is_some_and(|d| d.conn == conn && d.running) {
@@ -2119,7 +2143,12 @@ impl DataCraftApp {
         }
         let Some(d) = self.drop.take() else { return };
         let conn = d.conn;
+        if let Some(r) = d.routine_ref() {
+            self.routine_dropped(&r);
+            return;
+        }
         match d.kind {
+            DropKind::Procedure | DropKind::Function => {}
             DropKind::Database => {
                 if let Some(c) = self.conn_mut(conn) {
                     c.databases.retain(|x| x.name != d.db);
@@ -2411,6 +2440,7 @@ impl DataCraftApp {
             || self.confirm_analyze.is_some()
             || self.create.is_some()
             || self.views.dialog.is_some()
+            || self.routines.is_open()
             || self.drop.is_some()
             || self.import.is_some()
             || self.copy.is_some()
@@ -3332,6 +3362,7 @@ impl DataCraftApp {
         }
 
         self.view_dialog(ctx);
+        self.routine_dialogs(ctx);
         self.user_dialog_ui(ctx);
 
         if let Some(d) = self.import.as_mut() {
@@ -4181,7 +4212,7 @@ mod tests {
             active: 1, next_console_id: 5, console_counter: 4, result_salt: 0,
             explorer: ExplorerState::default(), backup: None, object_browser: crate::ui::object_browser::ObjectBrowser::default(),
             save_on_row_change: false,
-            dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
+            dialog: None, confirm_delete: None, confirm_analyze: None, ask_password: None, create: None, drop: None, views: Default::default(), routines: Default::default(), import: None, copy: None, mask_export: None, user_dialog: None, renaming: None,
             show_about: false, show_settings: false, script: None, check_updates: false, skipped_version: None, update_check: None, update: None, native_menu: None, show_explorer: true,
             show_results: true, dark: true, applied_dark: None, font_size: DEFAULT_FONT_SIZE,
             max_rows: 1000, auto_complete: true, status_msg: None, last_conn_id: 0, demo_pending: false, demo_edit: None,
