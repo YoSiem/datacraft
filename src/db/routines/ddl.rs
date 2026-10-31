@@ -368,15 +368,21 @@ pub fn drop_sql(driver: Driver, kind: RoutineKind, schema: &str, name: &str, sig
 }
 
 /// Oracle reports compilation errors without failing `CREATE`: this block turns them into one.
-fn oracle_compile_check(spec: &RoutineSpec) -> String {
+fn oracle_compile_check(spec: &RoutineSpec, cleanup: bool) -> String {
     let owner = spec.schema.replace('\'', "''");
     let name = final_name(Driver::Oracle, spec).replace('\'', "''");
     let kind = spec.kind.keyword().to_uppercase();
+    let cleanup = if cleanup {
+        let drop = drop_sql(Driver::Oracle, spec.kind, &spec.schema, &final_name(Driver::Oracle, spec), "");
+        format!("    execute immediate {};\n", literal(Driver::Oracle, &Some(drop)))
+    } else {
+        String::new()
+    };
     format!(
         "declare\n    msg varchar2(4000);\nbegin\n    for e in (select line, position, text from all_errors\n              \
          where owner = '{owner}' and name = '{name}' and type = '{kind}' and attribute = 'ERROR'\n              \
          order by sequence) loop\n        msg := substr(msg || 'Line ' || e.line || ':' || e.position || ' ' || e.text || chr(10), 1, 4000);\n    \
-         end loop;\n    if msg is not null then\n        raise_application_error(-20000, rtrim(msg, chr(10)));\n    end if;\nend;"
+         end loop;\n{cleanup}    if msg is not null then\n        raise_application_error(-20000, rtrim(msg, chr(10)));\n    end if;\nend;"
     )
 }
 
@@ -399,13 +405,21 @@ pub fn routine_statements(driver: Driver, spec: &RoutineSpec) -> RoutineStatemen
         match driver {
             // MySQL has no CREATE OR REPLACE for routines.
             Driver::MySql if spec.or_replace => {
+                let mut check = spec.clone();
+                check.name = scratch_name(&spec.name);
+                statements.push(create(driver, &check, Verb::Create));
+                statements.push(drop_sql(driver, spec.kind, &spec.schema, &check.name, ""));
                 statements.push(format!("drop {} if exists {}", spec.kind.keyword(), qualified(driver, &spec.schema, &spec.name)));
                 statements.push(create(driver, spec, Verb::Create));
+            }
+            Driver::Oracle if spec.or_replace => {
+                oracle_scratch_check(spec, &mut statements);
+                statements.push(create(driver, spec, Verb::Replace));
             }
             _ => statements.push(create(driver, spec, if spec.or_replace { Verb::Replace } else { Verb::Create })),
         }
         match driver {
-            Driver::Oracle => statements.push(oracle_compile_check(spec)),
+            Driver::Oracle => statements.push(oracle_compile_check(spec, false)),
             Driver::Postgres if !spec.options.comment.is_empty() => {
                 statements.push(pg_comment(spec));
                 transaction = true;
@@ -466,8 +480,9 @@ pub fn routine_statements(driver: Driver, spec: &RoutineSpec) -> RoutineStatemen
             statements.push(create(driver, spec, Verb::Create));
         }
         Driver::Oracle => {
-            statements.push(create(driver, spec, Verb::Replace));
-            statements.push(oracle_compile_check(spec));
+            oracle_scratch_check(spec, &mut statements);
+            statements.push(create(driver, spec, if same_name { Verb::Replace } else { Verb::Create }));
+            statements.push(oracle_compile_check(spec, false));
             if !same_name {
                 statements.push(drop_old);
             }
@@ -481,6 +496,18 @@ pub fn routine_statements(driver: Driver, spec: &RoutineSpec) -> RoutineStatemen
         }
     }
     RoutineStatements { statements, transaction }
+}
+
+fn oracle_scratch_check(spec: &RoutineSpec, statements: &mut Vec<String>) {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    spec.schema.hash(&mut hash);
+    spec.name.hash(&mut hash);
+    let mut check = spec.clone();
+    check.name = format!("DC_CHECK_{:016X}", hash.finish());
+    check.original = None;
+    statements.push(create(Driver::Oracle, &check, Verb::Create));
+    statements.push(oracle_compile_check(&check, true));
 }
 
 /// MySQL scratch name for the compile check (64 characters at most).

@@ -150,6 +150,21 @@ async fn lifecycle(driver: Driver) {
         assert_eq!(rs.rows[0][0].as_deref(), Some("6"), "{driver:?}");
     }
 
+    // A broken replacement must leave the working function callable.
+    if matches!(driver, Driver::Oracle | Driver::MySql) {
+        let mut broken = loaded.clone();
+        broken.body = if driver == Driver::Oracle { "begin return missing_variable; end;" } else { "begin this is not valid sql; end" }.into();
+        assert!(run(&mut s, &routine_statements(driver, &broken)).await.is_err());
+        args[1].use_default = false;
+        let rs = call(&mut s, driver, &call_sql(driver, &loaded, &args)).await;
+        assert_eq!(rs.rows[0][0].as_deref().map(|v| v.trim_end_matches(".0")), Some("15"));
+        broken.original = None;
+        broken.or_replace = true;
+        assert!(run(&mut s, &routine_statements(driver, &broken)).await.is_err());
+        let rs = call(&mut s, driver, &call_sql(driver, &loaded, &args)).await;
+        assert_eq!(rs.rows[0][0].as_deref().map(|v| v.trim_end_matches(".0")), Some("15"));
+    }
+
     // Edited in place, then renamed.
     let mut edit = loaded.clone();
     edit.body = edit.body.replace("return ", "return 1 + ");

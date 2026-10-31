@@ -335,6 +335,7 @@
     "Security:": "Bezpieczeństwo:",
     "Table (table-valued function)": "Tabela (funkcja tabelaryczna)",
     "Table variable:": "Zmienna tabelaryczna:",
+    "Saving this change drops the routine's existing grants.": "Zapisanie tej zmiany usuwa istniejące uprawnienia do procedury lub funkcji.",
     "The body is required": "Treść jest wymagana",
     "The definition couldn't be split into fields: edit the statement directly.": "Nie udało się rozdzielić definicji na pola: edytuj instrukcję bezpośrednio.",
     "The return type is required": "Typ zwracany jest wymagany",

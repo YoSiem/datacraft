@@ -335,6 +335,7 @@
     "Security:": "Sicherheit:",
     "Table (table-valued function)": "Tabelle (tabellenwertige Funktion)",
     "Table variable:": "Tabellenvariable:",
+    "Saving this change drops the routine's existing grants.": "Beim Speichern dieser Änderung werden die bestehenden Berechtigungen der Routine entfernt.",
     "The body is required": "Der Rumpf ist erforderlich",
     "The definition couldn't be split into fields: edit the statement directly.": "Die Definition ließ sich nicht in Felder aufteilen: Bearbeiten Sie die Anweisung direkt.",
     "The return type is required": "Der Rückgabetyp ist erforderlich",

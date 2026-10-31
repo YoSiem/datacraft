@@ -335,6 +335,7 @@
     "Security:": "セキュリティ:",
     "Table (table-valued function)": "テーブル (テーブル値関数)",
     "Table variable:": "テーブル変数:",
+    "Saving this change drops the routine's existing grants.": "この変更を保存すると、ルーチンの既存の権限が削除されます。",
     "The body is required": "本体は必須です",
     "The definition couldn't be split into fields: edit the statement directly.": "定義をフィールドに分けられませんでした。文を直接編集してください。",
     "The return type is required": "戻り値の型は必須です",

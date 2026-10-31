@@ -359,8 +359,8 @@ fn new_routine_statements() {
     let mut s = sample(Driver::MySql, RoutineKind::Function);
     s.or_replace = true;
     let st = routine_statements(Driver::MySql, &s);
-    assert_eq!(st.statements[0], "drop function if exists app.order_total");
-    assert!(st.statements[1].starts_with("create definer"));
+    assert_eq!(st.statements[2], "drop function if exists app.order_total");
+    assert!(st.statements[3].starts_with("create definer"));
     assert!(routine_statements(Driver::MariaDb, &s).statements[0].starts_with("create or replace definer"));
 
     let s = sample(Driver::Oracle, RoutineKind::Procedure);
@@ -415,8 +415,8 @@ fn editing_replaces_in_place_when_possible() {
     assert_eq!(st.statements[0], "drop function app.order_total");
 
     let ora = routine_statements(Driver::Oracle, &edited(Driver::Oracle, RoutineKind::Function, ""));
-    assert!(ora.statements[0].starts_with("create or replace function APP.ORDER_TOTAL("));
-    assert_eq!(ora.statements.len(), 2);
+    assert!(ora.statements[2].starts_with("create or replace function APP.ORDER_TOTAL("));
+    assert_eq!(ora.statements.len(), 4);
 
     let sf = edited(Driver::Snowflake, RoutineKind::Procedure, "NUMBER, NUMBER");
     assert_eq!(routine_statements(Driver::Snowflake, &sf).statements.len(), 1);
@@ -441,6 +441,39 @@ fn mysql_checks_the_new_text_before_dropping() {
     let st = routine_statements(Driver::MySql, &renamed);
     assert!(st.statements[0].contains("procedure app.other("));
     assert_eq!(st.statements[1], "drop procedure app.order_total");
+}
+
+#[test]
+fn replacement_checks_a_scratch_routine_before_touching_the_original() {
+    for driver in [Driver::MySql, Driver::Oracle] {
+        for edit in [false, true] {
+            let mut s = if edit { edited(driver, RoutineKind::Function, "") } else { sample(driver, RoutineKind::Function) };
+            s.or_replace = true;
+            let statements = routine_statements(driver, &s).statements;
+            let target = final_name(driver, &s);
+            assert!(statements[0].to_ascii_lowercase().contains("dc_check"), "{driver:?}: {statements:?}");
+            let target_action = statements.iter().position(|sql| {
+                let sql = sql.to_ascii_lowercase();
+                !sql.contains("dc_check") && sql.contains(&target.to_ascii_lowercase()) && (sql.starts_with("drop ") || sql.starts_with("create or replace"))
+            }).unwrap();
+            assert!(target_action >= 2, "{driver:?}: {statements:?}");
+            if driver == Driver::Oracle {
+                assert!(statements[1].contains("all_errors"));
+                assert!(statements[1].to_ascii_lowercase().contains("execute immediate"));
+            }
+        }
+    }
+}
+
+#[test]
+fn numeric_arguments_only_emit_plain_decimal_literals_unquoted() {
+    let spec = parse(Driver::MySql, "CREATE PROCEDURE p(in n double) begin end");
+    for value in ["NaN", "inf", "-inf", "1e5"] {
+        assert!(call_sql(Driver::MySql, &spec, &values(&[value])).contains(&format!("'{value}'")), "{value}");
+    }
+    for value in ["-12.5", "+4", ".5", "5."] {
+        assert!(call_sql(Driver::MySql, &spec, &values(&[value])).contains(&format!("({value})")), "{value}");
+    }
 }
 
 #[test]

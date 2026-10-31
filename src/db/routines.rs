@@ -372,17 +372,16 @@ fn list_query(driver: Driver, db: &str, oracle_maintained: bool) -> String {
             };
             format!(
                 "SELECT o.OWNER, o.OBJECT_NAME, SUBSTR(o.OBJECT_TYPE, 1, 1), '', \
-                        (SELECT LISTAGG(a.ARGUMENT_NAME || ' ' || DECODE(a.IN_OUT, 'IN', '', a.IN_OUT || ' ') || a.DATA_TYPE, ', ') \
-                                WITHIN GROUP (ORDER BY a.POSITION) \
-                         FROM ALL_ARGUMENTS a \
-                         WHERE a.OWNER = o.OWNER AND a.OBJECT_NAME = o.OBJECT_NAME AND a.PACKAGE_NAME IS NULL \
-                           AND a.DATA_LEVEL = 0 AND a.POSITION > 0 AND a.ARGUMENT_NAME IS NOT NULL), \
-                        (SELECT MAX(a.DATA_TYPE) FROM ALL_ARGUMENTS a \
-                         WHERE a.OWNER = o.OWNER AND a.OBJECT_NAME = o.OBJECT_NAME AND a.PACKAGE_NAME IS NULL \
-                           AND a.DATA_LEVEL = 0 AND a.POSITION = 0), \
+                        LISTAGG(CASE WHEN a.POSITION > 0 AND a.ARGUMENT_NAME IS NOT NULL \
+                                     THEN a.ARGUMENT_NAME || ' ' || DECODE(a.IN_OUT, 'IN', '', a.IN_OUT || ' ') || a.DATA_TYPE END, ', ') \
+                            WITHIN GROUP (ORDER BY a.POSITION), \
+                        MAX(CASE WHEN a.POSITION = 0 THEN a.DATA_TYPE END), \
                         o.STATUS \
                  FROM ALL_OBJECTS o \
+                 LEFT JOIN ALL_ARGUMENTS a ON a.OWNER = o.OWNER AND a.OBJECT_NAME = o.OBJECT_NAME \
+                     AND a.PACKAGE_NAME IS NULL AND a.DATA_LEVEL = 0 \
                  WHERE o.OBJECT_TYPE IN ('PROCEDURE', 'FUNCTION') AND {owners} \
+                 GROUP BY o.OWNER, o.OBJECT_NAME, o.OBJECT_TYPE, o.STATUS \
                  ORDER BY 1, 2"
             )
         }

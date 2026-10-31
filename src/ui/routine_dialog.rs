@@ -216,6 +216,12 @@ impl RoutineDialog {
                 }
                 if self.raw.is_none() {
                     ui.add_space(10.0);
+                    if matches!(self.driver, Driver::Postgres | Driver::MsSql)
+                        && self.spec.is_edit()
+                        && self.statements().statements.iter().any(|s| s.starts_with("drop "))
+                    {
+                        ui.label(RichText::new(tr("Saving this change drops the routine's existing grants.")).color(p.warn));
+                    }
                     sql_preview(ui, "routine", &self.preview_text());
                 }
             });
@@ -761,6 +767,21 @@ mod tests {
                 assert!(sql.contains(if driver == Driver::MsSql { "@p1" } else { "p1" }), "{driver:?} {kind:?}: {created:?}");
             }
         }
+    }
+
+    #[test]
+    fn warns_when_edit_drops_existing_grants() {
+        use egui_kittest::kittest::Queryable;
+        let mut spec = RoutineSpec::new(Driver::Postgres, RoutineKind::Function, "public".into());
+        spec.name = "total".into();
+        spec.mark_original("integer");
+        let mut h = harness(RoutineDialog::edit_routine(1, Driver::Postgres, "shop".into(), spec, 1));
+        h.state_mut().dialog.loading = None;
+        h.run_steps(3);
+        assert!(h.query_by_label(tr("Saving this change drops the routine's existing grants.")).is_none());
+        h.state_mut().dialog.spec.returns.data_type = "bigint".into();
+        h.run_steps(3);
+        assert!(h.query_by_label(tr("Saving this change drops the routine's existing grants.")).is_some());
     }
 
     #[test]

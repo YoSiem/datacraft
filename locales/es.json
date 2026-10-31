@@ -335,6 +335,7 @@
     "Security:": "Seguridad:",
     "Table (table-valued function)": "Tabla (función con valores de tabla)",
     "Table variable:": "Variable de tabla:",
+    "Saving this change drops the routine's existing grants.": "Al guardar este cambio se eliminan los permisos existentes de la rutina.",
     "The body is required": "El cuerpo es obligatorio",
     "The definition couldn't be split into fields: edit the statement directly.": "No se pudo separar la definición en campos: edita la sentencia directamente.",
     "The return type is required": "El tipo devuelto es obligatorio",

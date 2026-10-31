@@ -43,23 +43,28 @@ Saving an edited routine replaces it in place when the engine allows it:
 | MariaDB | `CREATE OR REPLACE` | create the new one, drop the old | same as same name |
 | MySQL | compile under a scratch name, then drop and create | create the new one, drop the old | same as same name |
 | SQL Server | `ALTER` | create the new one, drop the old | drop and create in one transaction when the function kind changes |
-| Oracle | `CREATE OR REPLACE` | create the new one, drop the old | same as same name |
+| Oracle | compile under a scratch name, then `CREATE OR REPLACE` | compile under a scratch name, create the new one, drop the old | same as same name |
 | Snowflake | `CREATE OR REPLACE` | create the new one, drop the old | create the new overload, drop the old one |
 
-MySQL cannot replace a routine, so the new text is first compiled under a scratch name: a
-mistake never drops the routine being edited. Oracle accepts routines with compilation
-errors; DataCraft reports those errors (line, position and message) instead of a silent
-success. A definition the dialog can't split into fields (for example a PostgreSQL
-`BEGIN ATOMIC` body or a SQL Server routine `WITH ENCRYPTION` options it doesn't know) opens
-as an editable statement instead.
+MySQL cannot replace a routine, so edits and new routines with **OR REPLACE** are first
+compiled under a scratch name. Oracle also checks a scratch routine before an edit or
+replacement, reporting compilation errors (line, position and message) and removing the
+scratch routine. A name collision stops the operation without replacing the scratch object.
+The check cannot guarantee the final creation will succeed: for example, the database state
+can change between statements, or the routine may refer to its own name. Review the SQL
+preview and keep a backup before replacing a routine. PostgreSQL signature changes and
+SQL Server function-kind changes drop and recreate the object, removing its grants; the
+dialog warns when this happens. A definition the dialog can't split into fields (for example
+a PostgreSQL `BEGIN ATOMIC` body or a SQL Server routine `WITH ENCRYPTION` options it doesn't
+know) opens as an editable statement instead; its SQL is run directly without the scratch check.
 
 ## Execute
 
 Each input parameter gets a value field. **NULL** passes `NULL`, **Default** leaves the
 argument out so its default applies (with named arguments where needed), and **SQL**
-writes the value as an expression instead of a text literal. Numbers and booleans are
-written as typed; PostgreSQL and Snowflake values are cast to the parameter type so the
-right overload is called.
+writes the value as an expression instead of a text literal. Plain decimal numbers and
+booleans are written as typed; other values are quoted. PostgreSQL and Snowflake values are
+cast to the parameter type so the right overload is called.
 
 **Run** opens a console with the call and runs it; **Open in Console** only opens it. Output
 parameters come back as rows:

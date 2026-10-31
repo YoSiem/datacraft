@@ -335,6 +335,7 @@
     "Security:": "安全性：",
     "Table (table-valued function)": "表（表值函数）",
     "Table variable:": "表变量：",
+    "Saving this change drops the routine's existing grants.": "保存此更改会删除该例程现有的授权。",
     "The body is required": "主体为必填项",
     "The definition couldn't be split into fields: edit the statement directly.": "无法将定义拆分为字段：请直接编辑语句。",
     "The return type is required": "返回类型为必填项",

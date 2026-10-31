@@ -46,7 +46,17 @@ fn argument(driver: Driver, p: &Param, v: &ArgValue) -> String {
     if v.expression || p.mode == ParamMode::Variadic {
         return value.to_string();
     }
-    if is_numeric(ty) && !value.is_empty() && value.parse::<f64>().is_ok() {
+    let unsigned = value.strip_prefix(['+', '-']).unwrap_or(value);
+    let mut dot = false;
+    let decimal = unsigned.bytes().all(|b| match b {
+        b'0'..=b'9' => true,
+        b'.' if !dot => {
+            dot = true;
+            true
+        }
+        _ => false,
+    }) && unsigned.bytes().any(|b| b.is_ascii_digit());
+    if is_numeric(ty) && decimal {
         return value.to_string();
     }
     if is_boolean(ty) && matches!(value.to_ascii_lowercase().as_str(), "true" | "false") {
