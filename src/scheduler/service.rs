@@ -397,7 +397,15 @@ mod tests {
             {
                 let disabled = Command::new("launchctl").args(["print-disabled", &launchd_domain().unwrap()]).output().unwrap();
                 assert!(disabled.status.success());
-                assert!(String::from_utf8_lossy(&disabled.stdout).lines().any(|line| line.contains("com.datacraft.scheduler") && line.contains("true")));
+                let output = String::from_utf8_lossy(&disabled.stdout);
+                assert!(
+                    output.lines().any(|line| {
+                        line.split_once("=>").is_some_and(|(label, state)| {
+                            label.trim().trim_matches('"') == "com.datacraft.scheduler" && matches!(state.trim().trim_end_matches(','), "true" | "disabled")
+                        })
+                    }),
+                    "unexpected LaunchAgent disabled state: {output}"
+                );
             }
             unregister().unwrap();
         };
