@@ -2,6 +2,7 @@
 
 pub mod connection_dialog;
 pub mod backup_dialog;
+pub(crate) mod workflow_dialog;
 pub mod branding;
 pub mod window_chrome;
 pub mod copy_dialog;
