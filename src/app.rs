@@ -2552,7 +2552,7 @@ impl DataCraftApp {
                 self.open_sql_file();
             }
             let demo = std::env::var("DATACRAFT_DEMO").is_ok_and(|v| !v.is_empty());
-            if ui.add_enabled(!demo, egui::Button::new(tr("SQL scheduler…"))).clicked() {
+            if ui.add_enabled(!demo, egui::Button::new(tr("Task scheduler…"))).clicked() {
                 let configs: Vec<_> = self.conns.iter().map(|connection| connection.cfg.clone()).collect();
                 self.scheduler = Some(crate::scheduler::dialog::Dialog::new(ui.ctx(), &configs));
                 ui.close();

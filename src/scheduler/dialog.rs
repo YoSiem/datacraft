@@ -1,11 +1,17 @@
 //! SQL task manager. Persistence and service operations run outside the UI thread.
 
+use super::backup::ScheduledBackup;
 use super::{Job, Run, Store, database_path, now, service, validate};
 use crate::db::ConnectionConfig;
+use crate::db::{Driver, backup::BackupRequest};
 use crate::i18n::tr;
+use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
 
+mod backup_view;
 mod view;
+
+type CatalogReply = (u64, Result<Vec<String>, String>);
 
 enum Action {
     Load,
@@ -108,6 +114,11 @@ pub struct Dialog {
     running: bool,
     confirm_save: bool,
     confirm_delete: bool,
+    cached_backup: Option<(u64, ScheduledBackup)>,
+    backup_preview: Option<BackupRequest>,
+    catalogs: HashMap<u64, Vec<String>>,
+    catalog_receiver: Option<Receiver<CatalogReply>>,
+    catalog_error: Option<(u64, String)>,
 }
 
 impl Dialog {
@@ -121,6 +132,7 @@ impl Dialog {
                 .map_or(0, |c| c.id),
             database: String::new(),
             sql: String::new(),
+            backup: None,
             interval_seconds: 300,
             enabled: true,
             next_run: 0,
@@ -142,6 +154,11 @@ impl Dialog {
             running: false,
             confirm_save: false,
             confirm_delete: false,
+            cached_backup: None,
+            backup_preview: None,
+            catalogs: HashMap::new(),
+            catalog_receiver: None,
+            catalog_error: None,
         };
         dialog.dispatch(ctx, Action::Load);
         dialog
@@ -152,21 +169,203 @@ impl Dialog {
             || a.connection != b.connection
             || a.database != b.database
             || a.sql != b.sql
+            || a.backup != b.backup
             || a.enabled != b.enabled
             || self.interval.seconds() != Some(b.interval_seconds)
     }
     fn valid(&self, connections: &[ConnectionConfig]) -> bool {
         !self.draft.name.trim().is_empty()
-            && !self.draft.sql.trim().is_empty()
             && self.interval.seconds().is_some()
-            && connections
-                .iter()
-                .any(|c| c.id == self.draft.connection && !c.driver.is_nosql())
+            && connections.iter().any(|c| {
+                c.id == self.draft.connection
+                    && match &self.draft.backup {
+                        Some(backup) => {
+                            !(c.read_only && !BackupRequest::local(c.driver))
+                                && (c.driver != Driver::Oracle
+                                    || self.backup_database(c) == c.database)
+                                && backup.validate(c.driver, &self.backup_database(c)).is_ok()
+                        }
+                        None => !c.driver.is_nosql() && !self.draft.sql.trim().is_empty(),
+                    }
+            })
     }
     fn set_draft(&mut self, draft: Job) {
         self.interval = Interval::from_seconds(draft.interval_seconds);
         self.original = draft.clone();
         self.draft = draft;
+        self.cached_backup = None;
+        self.backup_preview = None;
+    }
+
+    fn backup_database(&self, connection: &ConnectionConfig) -> String {
+        if !self.draft.database.is_empty() {
+            self.draft.database.clone()
+        } else if connection.driver == Driver::Sqlite {
+            "main".into()
+        } else {
+            connection.database.clone()
+        }
+    }
+
+    fn select_backup(&mut self, backup: bool, connections: &[ConnectionConfig]) {
+        if backup == self.draft.backup.is_some() {
+            return;
+        }
+        if backup {
+            let previous_source = self.draft.connection;
+            let connection = connections
+                .iter()
+                .find(|c| {
+                    c.id == self.draft.connection
+                        && !crate::db::backup::BackupMode::for_driver(c.driver).is_empty()
+                })
+                .or_else(|| {
+                    connections
+                        .iter()
+                        .find(|c| !crate::db::backup::BackupMode::for_driver(c.driver).is_empty())
+                });
+            if let Some(connection) = connection {
+                self.draft.connection = connection.id;
+                self.draft.backup = Some(match self.cached_backup.take() {
+                    Some((id, settings)) if id == connection.id => settings,
+                    _ => ScheduledBackup::new(connection.driver),
+                });
+                if previous_source != connection.id {
+                    self.draft.database.clear();
+                }
+                if self.draft.database.is_empty() {
+                    self.draft.database = self.backup_database(connection);
+                }
+            } else {
+                self.draft.connection = 0;
+                self.draft.backup = Some(ScheduledBackup::new(Driver::Sqlite));
+            }
+            if self.draft.name.is_empty() {
+                self.draft.name = tr("Database backup").into();
+            }
+        } else {
+            self.cached_backup = self
+                .draft
+                .backup
+                .take()
+                .map(|settings| (self.draft.connection, settings));
+        }
+        self.backup_preview = None;
+    }
+
+    fn source_changed(&mut self, previous: u64, connections: &[ConnectionConfig]) {
+        if self.draft.backup.is_none() || previous == self.draft.connection {
+            return;
+        }
+        if let Some(connection) = connections.iter().find(|c| c.id == self.draft.connection) {
+            if connections
+                .iter()
+                .find(|c| c.id == previous)
+                .map(|c| c.driver)
+                != Some(connection.driver)
+            {
+                self.draft.backup = Some(ScheduledBackup::new(connection.driver));
+            }
+            self.draft.database = if connection.driver == Driver::Sqlite {
+                "main".into()
+            } else {
+                connection.database.clone()
+            };
+        }
+        self.cached_backup = None;
+        self.backup_preview = None;
+    }
+
+    fn load_catalog(&mut self, ctx: &egui::Context, connection: &ConnectionConfig, force: bool) {
+        if self.catalog_receiver.is_some() || (!force && self.catalogs.contains_key(&connection.id))
+        {
+            return;
+        }
+        if matches!(connection.driver, Driver::Sqlite | Driver::Oracle) {
+            let names = if connection.driver == Driver::Sqlite {
+                vec!["main".into()]
+            } else if connection.database.is_empty() {
+                Vec::new()
+            } else {
+                vec![connection.database.clone()]
+            };
+            self.catalogs.insert(connection.id, names);
+            return;
+        }
+        let cfg = connection.clone();
+        let id = cfg.id;
+        let (sender, receiver) = mpsc::channel();
+        let ctx = ctx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("scheduler-databases".into())
+            .spawn(move || {
+                let result = (|| -> anyhow::Result<Vec<String>> {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()?;
+                    runtime.block_on(async {
+                        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                            let mut session = crate::db::Session::connect(&cfg).await?;
+                            session.list_databases().await
+                        })
+                        .await?
+                    })
+                })();
+                let _ = sender.send((
+                    id,
+                    result.map_err(|_| {
+                        tr("Could not load databases. Check the saved connection.").into()
+                    }),
+                ));
+                ctx.request_repaint();
+            });
+        match spawned {
+            Ok(_) => {
+                self.catalog_receiver = Some(receiver);
+                self.catalog_error = None;
+            }
+            Err(_) => {
+                self.catalog_error = Some((
+                    id,
+                    tr("Could not load databases. Check the saved connection.").into(),
+                ))
+            }
+        }
+    }
+
+    fn open_confirmation(&mut self, connections: &[ConnectionConfig]) {
+        self.backup_preview = None;
+        if let Some(backup) = &self.draft.backup
+            && let Some(connection) = connections.iter().find(|c| c.id == self.draft.connection)
+        {
+            match backup.request(connection.driver, &self.backup_database(connection)) {
+                Ok(request) => self.backup_preview = Some(request),
+                Err(error) => {
+                    self.message = Some((error.to_string(), true));
+                    return;
+                }
+            }
+        }
+        self.confirm_save = true;
+    }
+
+    fn submit_confirmation(
+        &mut self,
+        connections: &[ConnectionConfig],
+        action: &mut Option<Action>,
+    ) {
+        if let Some(seconds) = self.interval.seconds() {
+            let mut job = self.draft.clone();
+            job.interval_seconds = seconds;
+            if job.backup.is_some() {
+                if let Some(connection) = connections.iter().find(|c| c.id == job.connection) {
+                    job.database = self.backup_database(connection);
+                }
+                job.sql.clear();
+            }
+            *action = Some(Action::Save(job));
+        }
+        self.confirm_save = false;
     }
     fn apply_navigation(
         &mut self,
@@ -312,7 +511,41 @@ impl Dialog {
         }
     }
     pub fn show(&mut self, ctx: &egui::Context, connections: &[ConnectionConfig]) -> bool {
+        if let Some(receiver) = &self.catalog_receiver {
+            match receiver.try_recv() {
+                Ok((id, result)) => {
+                    self.catalog_receiver = None;
+                    match result {
+                        Ok(mut names) => {
+                            names.sort();
+                            names.dedup();
+                            self.catalogs.insert(id, names);
+                        }
+                        Err(error) => self.catalog_error = Some((id, error)),
+                    }
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.catalog_receiver = None;
+                    self.catalog_error = Some((
+                        self.draft.connection,
+                        tr("Could not load databases. Check the saved connection.").into(),
+                    ));
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
         self.poll(connections);
+        if self.draft.backup.is_some()
+            && self.catalog_receiver.is_none()
+            && !self.catalogs.contains_key(&self.draft.connection)
+            && self
+                .catalog_error
+                .as_ref()
+                .is_none_or(|(id, _)| *id != self.draft.connection)
+            && let Some(connection) = connections.iter().find(|c| c.id == self.draft.connection)
+        {
+            self.load_catalog(ctx, connection, false);
+        }
         let mut action = None;
         self.render(ctx, connections, &mut action);
         let mut close = false;
@@ -338,7 +571,9 @@ impl Dialog {
                 close = self.apply_navigation(connections, &mut action);
             }
         }
-        if self.confirm_save {
+        if self.confirm_save && self.draft.backup.is_some() {
+            self.confirm_backup(ctx, connections, &mut action);
+        } else if self.confirm_save {
             egui::Modal::new(egui::Id::new("confirm_scheduled_sql")).show(ctx, |ui| {
                 ui.set_max_width(620.0_f32.min(ctx.content_rect().width() - 64.0));
                 ui.heading(tr("Confirm task"));
@@ -348,12 +583,7 @@ impl Dialog {
                 });
                 ui.horizontal(|ui| {
                     if crate::ui::theme::primary_button(ui, tr("Save task")).clicked() {
-                        if let Some(seconds) = self.interval.seconds() {
-                            let mut job = self.draft.clone();
-                            job.interval_seconds = seconds;
-                            action = Some(Action::Save(job));
-                        }
-                        self.confirm_save = false;
+                        self.submit_confirmation(connections, &mut action);
                     }
                     if ui.button(tr("Keep editing")).clicked() {
                         self.confirm_save = false;
@@ -389,6 +619,179 @@ mod tests {
     use crate::db::Driver;
     use egui_kittest::kittest::Queryable;
 
+    fn backup_fixture() -> Dialog {
+        let mut dialog = fixture();
+        dialog.draft.sql.clear();
+        dialog.draft.database = "main".into();
+        let mut backup = crate::scheduler::backup::ScheduledBackup::new(Driver::Sqlite);
+        backup.folder = std::env::temp_dir().to_string_lossy().into_owned();
+        dialog.draft.backup = Some(backup);
+        dialog
+    }
+
+    #[test]
+    fn backup_task_does_not_require_sql() {
+        let dialog = backup_fixture();
+        assert!(dialog.valid(&[ConnectionConfig::new(1, Driver::Sqlite)]));
+    }
+
+    #[test]
+    fn backup_confirmation_preserves_exact_database_identifiers() {
+        let mut connection = ConnectionConfig::new(1, Driver::Postgres);
+        connection.database = " app ".into();
+        let mut dialog = backup_fixture();
+        dialog.draft.backup.as_mut().unwrap().utility = "pg_dump".into();
+        dialog.draft.database = " shop ".into();
+        dialog.open_confirmation(std::slice::from_ref(&connection));
+        assert_eq!(dialog.backup_preview.as_ref().unwrap().db, " shop ");
+        dialog.draft.database.clear();
+        dialog.open_confirmation(std::slice::from_ref(&connection));
+        assert_eq!(dialog.backup_preview.as_ref().unwrap().db, " app ");
+    }
+
+    #[test]
+    fn backup_confirmation_keeps_actions_visible_with_long_destinations() {
+        let connection = ConnectionConfig::new(1, Driver::Sqlite);
+        let mut dialog = backup_fixture();
+        dialog.draft.backup.as_mut().unwrap().folder = std::env::temp_dir()
+            .join("a".repeat(1500))
+            .to_string_lossy()
+            .into_owned();
+        dialog.open_confirmation(std::slice::from_ref(&connection));
+        let size = egui::vec2(400.0, 300.0);
+        let mut first = true;
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(size)
+            .build_ui_state(
+                move |ui, dialog: &mut Dialog| {
+                    if std::mem::take(&mut first) {
+                        crate::ui::theme::install_fonts(ui.ctx());
+                        return;
+                    }
+                    dialog.show(ui.ctx(), std::slice::from_ref(&connection));
+                },
+                dialog,
+            );
+        harness.run_steps(3);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        assert!(screen.contains_rect(harness.get_by_label("Keep editing").rect()));
+        assert!(screen.contains_rect(harness.get_by_label("Confirm task").rect()));
+    }
+
+    #[test]
+    fn backup_confirmation_keeps_actions_visible_with_server_sql_expanded() {
+        let mut connection = ConnectionConfig::new(1, Driver::Oracle);
+        connection.database = "XE".into();
+        let mut dialog = backup_fixture();
+        dialog.draft.database = "XE".into();
+        let mut backup = ScheduledBackup::new(Driver::Oracle);
+        backup.directory = "BACKUP_DIR".into();
+        dialog.draft.backup = Some(backup);
+        dialog.open_confirmation(std::slice::from_ref(&connection));
+        let size = egui::vec2(400.0, 300.0);
+        let mut first = true;
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(size)
+            .build_ui_state(
+                move |ui, dialog: &mut Dialog| {
+                    if std::mem::take(&mut first) {
+                        crate::ui::theme::install_fonts(ui.ctx());
+                        return;
+                    }
+                    dialog.show(ui.ctx(), std::slice::from_ref(&connection));
+                },
+                dialog,
+            );
+        harness.run_steps(3);
+        harness.get_by_label("SQL preview").scroll_to_me();
+        harness.run_steps(4);
+        harness.get_by_label("SQL preview").click();
+        harness.run_steps(4);
+        assert!(harness.query_by_label_contains("DBMS_DATAPUMP").is_some());
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+        assert!(screen.contains_rect(harness.get_by_label("Keep editing").rect()));
+        assert!(screen.contains_rect(harness.get_by_label("Confirm task").rect()));
+    }
+
+    #[test]
+    fn backup_changes_are_dirty() {
+        let mut dialog = backup_fixture();
+        dialog.set_draft(dialog.draft.clone());
+        assert!(!dialog.dirty());
+        dialog.draft.backup.as_mut().unwrap().compress = true;
+        assert!(dialog.dirty());
+    }
+
+    #[test]
+    fn switching_task_type_keeps_sql_and_backup_settings_until_saved() {
+        let connections = [ConnectionConfig::new(1, Driver::Sqlite)];
+        let mut dialog = fixture();
+        let sql = dialog.draft.sql.clone();
+        dialog.select_backup(true, &connections);
+        dialog.draft.backup.as_mut().unwrap().folder =
+            std::env::temp_dir().to_string_lossy().into_owned();
+        let settings = dialog.draft.backup.clone();
+        dialog.select_backup(false, &connections);
+        assert_eq!(dialog.draft.sql, sql);
+        dialog.select_backup(true, &connections);
+        assert_eq!(dialog.draft.backup, settings);
+        assert_eq!(dialog.draft.sql, sql);
+    }
+
+    #[test]
+    fn backup_confirmation_does_not_require_a_sql_statement() {
+        let connection = ConnectionConfig::new(1, Driver::Sqlite);
+        let mut dialog = backup_fixture();
+        dialog.open_confirmation(std::slice::from_ref(&connection));
+        assert!(dialog.backup_preview.is_some());
+        let mut first = true;
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1000.0, 760.0))
+            .build_ui_state(
+                move |ui, dialog: &mut Dialog| {
+                    if std::mem::take(&mut first) {
+                        crate::ui::theme::install_fonts(ui.ctx());
+                        return;
+                    }
+                    dialog.show(ui.ctx(), std::slice::from_ref(&connection));
+                },
+                dialog,
+            );
+        harness.run_steps(3);
+        assert!(
+            harness
+                .query_by_label(
+                    "A full backup will be created automatically at the selected interval."
+                )
+                .is_some()
+        );
+        assert!(
+            harness
+                .query_by_label("This SQL will run automatically and may change data.")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn backup_form_shows_a_destination_folder() {
+        let connection = ConnectionConfig::new(1, Driver::Sqlite);
+        let mut first = true;
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1000.0, 760.0))
+            .build_ui_state(
+                move |ui, dialog: &mut Dialog| {
+                    if std::mem::take(&mut first) {
+                        crate::ui::theme::install_fonts(ui.ctx());
+                        return;
+                    }
+                    dialog.show(ui.ctx(), std::slice::from_ref(&connection));
+                },
+                backup_fixture(),
+            );
+        harness.run_steps(3);
+        assert!(harness.query_by_label("Destination folder").is_some());
+    }
+
     fn fixture() -> Dialog {
         Dialog {
             jobs: Vec::new(),
@@ -400,6 +803,7 @@ mod tests {
                 connection: 1,
                 database: String::new(),
                 sql: "DELETE FROM records".into(),
+                backup: None,
                 interval_seconds: 60,
                 enabled: true,
                 next_run: 0,
@@ -413,6 +817,11 @@ mod tests {
             running: false,
             confirm_save: false,
             confirm_delete: false,
+            cached_backup: None,
+            backup_preview: None,
+            catalogs: HashMap::new(),
+            catalog_receiver: None,
+            catalog_error: None,
         }
     }
 
@@ -605,6 +1014,73 @@ mod tests {
                     .rect()
             )
         );
+    }
+
+    #[test]
+    #[ignore = "Requires a GPU; renders backup task controls on synthetic state without connecting"]
+    fn render_backup_tasks() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/scheduler-ui-snapshots");
+        std::fs::create_dir_all(&dir).unwrap();
+        for driver in [
+            Driver::Sqlite,
+            Driver::Postgres,
+            Driver::MsSql,
+            Driver::Oracle,
+            Driver::Snowflake,
+        ] {
+            for dark in [false, true] {
+                let mut connection = ConnectionConfig::new(1, driver);
+                connection.database = if driver == Driver::Sqlite {
+                    "main".into()
+                } else {
+                    "shop".into()
+                };
+                let mut dialog = fixture();
+                dialog.draft.sql.clear();
+                dialog.draft.name = "Daily database backup".into();
+                dialog.draft.database = connection.database.clone();
+                let mut backup = ScheduledBackup::new(driver);
+                backup.folder = if driver == Driver::MsSql {
+                    r"D:\DatabaseBackups".into()
+                } else {
+                    std::env::temp_dir()
+                        .join("DataCraft Backups")
+                        .to_string_lossy()
+                        .into_owned()
+                };
+                if driver == Driver::Oracle {
+                    backup.directory = "BACKUP_DIR".into();
+                }
+                dialog.draft.backup = Some(backup);
+                dialog.interval = Interval::from_seconds(86400);
+                dialog.catalogs.insert(1, vec![connection.database.clone()]);
+                let mut first = true;
+                let mut harness = egui_kittest::Harness::builder()
+                    .with_size(egui::vec2(1100.0, 800.0))
+                    .build_ui_state(
+                        move |ui, dialog: &mut Dialog| {
+                            if std::mem::take(&mut first) {
+                                crate::ui::theme::install_fonts(ui.ctx());
+                                crate::ui::theme::apply(ui.ctx(), dark);
+                                return;
+                            }
+                            dialog.show(ui.ctx(), std::slice::from_ref(&connection));
+                        },
+                        dialog,
+                    );
+                harness.run_steps(4);
+                harness
+                    .render()
+                    .unwrap()
+                    .save(dir.join(format!(
+                        "backup-{}-{}.png",
+                        driver.label().replace('/', "-"),
+                        if dark { "dark" } else { "light" }
+                    )))
+                    .unwrap();
+            }
+        }
     }
 
     #[test]

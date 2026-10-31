@@ -337,11 +337,28 @@ mod tests {
             connection: 1,
             database: "main".into(),
             sql: "UPDATE probe SET value = value + 1".into(),
+            backup: None,
             interval_seconds: 30,
             enabled: true,
             next_run: 0,
         };
         let id = store.save(&job, now() - 30).unwrap();
+        let folder = profile.join("backups");
+        std::fs::create_dir(&folder).unwrap();
+        let mut backup = crate::scheduler::backup::ScheduledBackup::new(Driver::Sqlite);
+        backup.folder = folder.to_string_lossy().into_owned();
+        let backup_id = store
+            .save(
+                &Job {
+                    id: 0,
+                    name: "native backup test".into(),
+                    sql: String::new(),
+                    backup: Some(backup),
+                    ..job
+                },
+                now() - 30,
+            )
+            .unwrap();
         let executable =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug/datacraft");
         #[cfg(target_os = "linux")]
@@ -364,17 +381,30 @@ mod tests {
         install(&executable).unwrap();
         wait_for_start().unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            let runs = store.runs(id).unwrap();
-            if let Some(run) = runs.first().filter(|run| run.status != "running") {
-                assert_eq!(run.status, "succeeded", "{}", run.message);
-                break;
+        for job_id in [id, backup_id] {
+            loop {
+                let runs = store.runs(job_id).unwrap();
+                if let Some(run) = runs.first().filter(|run| run.status != "running") {
+                    assert_eq!(run.status, "succeeded", "{}", run.message);
+                    if job_id == backup_id {
+                        let snapshot = rusqlite::Connection::open(&run.message).unwrap();
+                        assert_eq!(
+                            std::path::Path::new(&run.message).parent(),
+                            Some(folder.as_path())
+                        );
+                        let value = snapshot
+                            .query_row("SELECT value FROM probe", [], |row| row.get::<_, i64>(0))
+                            .unwrap();
+                        assert!((0..=1).contains(&value));
+                    }
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "service did not finish the task"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(100));
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "service did not finish the task"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(100));
         }
         assert_eq!(
             sample

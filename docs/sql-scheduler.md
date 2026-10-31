@@ -1,9 +1,9 @@
-# Scheduled SQL tasks
+# Scheduled SQL and backup tasks
 
-Open **File → SQL scheduler…** in the DataCraft application menu. Add a task,
-choose a saved SQL data source, enter its SQL and interval in seconds, minutes,
-hours or days, then
-confirm the SQL before saving. Leave the database field blank to use the data
+Open **File → Task scheduler…** in the DataCraft application menu. Add a task,
+choose **SQL** or **Backup**, and set an interval in seconds, minutes, hours or
+days. SQL tasks show the statement before saving. Leave the SQL task's database
+field blank to use the data
 source's default database. A task can be paused without stopping an execution
 that is already in progress. Editing or deleting an active task is refused until
 that execution has finished; pausing prevents its next execution.
@@ -12,6 +12,42 @@ The task list stays on the left, while **Configuration** provides the SQL editor
 and schedule settings and **History** shows recent executions and errors. Save
 and Cancel stay visible below both views. Switching tasks or closing with unsaved
 changes asks whether to keep editing or discard the draft.
+
+## Recurring backups without SQL
+
+Choose **Backup**, a saved data source, and the database. The database picker
+can load the source's available databases using the refresh button; SQLite uses
+`main` and Oracle uses the service saved in its connection. Choose a destination
+and confirm the settings. Only full backups are scheduled. Every execution
+generates a new filename or backup-set name from the database, UTC time and a
+unique identifier. Existing copies are never replaced or automatically deleted.
+The successful destination appears in **History**.
+Oracle tasks are tied to that saved service; changing the connection's service
+requires updating the task rather than silently exporting a different service.
+
+| Engine | Destination | Prerequisites |
+| --- | --- | --- |
+| SQLite | Local folder | An existing writable folder; uses the consistent online backup API |
+| PostgreSQL | Local folder | `pg_dump` installed on this computer; archive or SQL format, optional compression |
+| MySQL / MariaDB | Local folder | `mysqldump` / `mariadb-dump` installed on this computer; optional gzip |
+| SQL Server | Folder on the database server | Folder writable by the SQL Server service; copy-only full backups with checksums |
+| Oracle | Server DIRECTORY object | Data Pump full-export privileges; the file is on the server |
+| Snowflake | Backup-set schema | Native backup-set privileges; creates a new set for each run |
+
+The local file picker is shown only for local destinations. A SQL Server path
+can be a Windows drive, UNC share or Unix path regardless of which OS runs
+DataCraft. **Backup options** contains the utility path and engine-specific
+compression/archive controls. Credentials remain in the OS credential store.
+For MySQL/MariaDB, the existing certificate-verification and transaction options
+are available too. Consistent transaction mode is for InnoDB; disable it to lock
+nontransactional tables during their dump.
+
+When upgrading from the earlier SQL-only scheduler, restart an already running
+background process once (signing out and back in restarts its registered user
+service). An older process cannot run backup tasks; backup records deliberately
+contain no executable SQL so they fail safely until the process is upgraded.
+
+## Background operation
 
 An enabled task starts a separate background process and registers it to start
 when the user signs in: the current user's Run entry on Windows, a LaunchAgent

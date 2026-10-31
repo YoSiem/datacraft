@@ -70,9 +70,9 @@ impl Dialog {
                     "scheduler_heading",
                     Layout::top_down(Align::Min),
                 );
-                heading.label(RichText::new(tr("SQL scheduler")).font(theme::bold(19.0)));
+                heading.label(RichText::new(tr("Task scheduler")).font(theme::bold(19.0)));
                 heading.label(
-                    RichText::new(tr("Manage scheduled queries"))
+                    RichText::new(tr("Schedule SQL queries and database backups"))
                         .small()
                         .color(p.muted),
                 );
@@ -143,7 +143,12 @@ impl Dialog {
                             for job in &self.jobs {
                                 let interval = super::Interval::from_seconds(job.interval_seconds);
                                 let subtitle = format!(
-                                    "{} · {} {}",
+                                    "{} · {} · {} {}",
+                                    if job.backup.is_some() {
+                                        tr("Backup")
+                                    } else {
+                                        tr("SQL")
+                                    },
                                     if job.enabled {
                                         tr("Enabled")
                                     } else {
@@ -300,7 +305,11 @@ impl Dialog {
                 let text = if busy {
                     tr("Working…")
                 } else if self.dirty() && !self.valid(connections) {
-                    tr("Complete the task name, data source, SQL and interval.")
+                    if self.draft.backup.is_some() {
+                        tr("Complete the task name, database, backup destination and interval.")
+                    } else {
+                        tr("Complete the task name, data source, SQL and interval.")
+                    }
                 } else if self.dirty() {
                     tr("Unsaved changes")
                 } else {
@@ -330,7 +339,7 @@ impl Dialog {
                         .inner
                         .clicked()
                     {
-                        self.confirm_save = true;
+                        self.open_confirmation(connections);
                     }
                     if theme::secondary_button(ui, tr("Cancel")).clicked() {
                         self.pending_navigation = Some(Navigation::Close);
@@ -349,7 +358,7 @@ impl Dialog {
                 && self.dirty()
                 && ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::S))
             {
-                self.confirm_save = true;
+                self.open_confirmation(connections);
             }
         }
     }
@@ -369,6 +378,27 @@ impl Dialog {
                 .max_height(height)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    let previous_backup = self.draft.backup.is_some();
+                    let mut backup_type = previous_backup;
+                    ui.horizontal(|ui| {
+                        ui.label(tr("Task type"));
+                        egui::ComboBox::from_id_salt("scheduled_task_type")
+                            .selected_text(if backup_type { tr("Backup") } else { tr("SQL") })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut backup_type, false, tr("SQL"));
+                                ui.selectable_value(&mut backup_type, true, tr("Backup"));
+                            });
+                    });
+                    if backup_type != previous_backup {
+                        self.select_backup(backup_type, connections);
+                        if backup_type
+                            && let Some(connection) =
+                                connections.iter().find(|c| c.id == self.draft.connection)
+                        {
+                            self.load_catalog(ui.ctx(), connection, false);
+                        }
+                    }
+                    ui.add_space(6.0);
                     ui.label(tr("Name"));
                     ui.add(
                         egui::TextEdit::singleline(&mut self.draft.name)
@@ -377,6 +407,7 @@ impl Dialog {
                             .hint_text(tr("Task name")),
                     );
                     ui.add_space(6.0);
+                    let previous_source = self.draft.connection;
                     ui.columns(2, |columns| {
                         columns[0].label(tr("Data source"));
                         let label = connections
@@ -388,9 +419,14 @@ impl Dialog {
                             .truncate()
                             .selected_text(label)
                             .show_ui(&mut columns[0], |ui| {
-                                for connection in
-                                    connections.iter().filter(|c| !c.driver.is_nosql())
-                                {
+                                for connection in connections.iter().filter(|c| {
+                                    if backup_type {
+                                        !crate::db::backup::BackupMode::for_driver(c.driver)
+                                            .is_empty()
+                                    } else {
+                                        !c.driver.is_nosql()
+                                    }
+                                }) {
                                     ui.selectable_value(
                                         &mut self.draft.connection,
                                         connection.id,
@@ -399,12 +435,31 @@ impl Dialog {
                                 }
                             });
                         columns[1].label(tr("Database"));
-                        columns[1].add(
-                            egui::TextEdit::singleline(&mut self.draft.database)
-                                .desired_width(f32::INFINITY)
-                                .hint_text(tr("Default database")),
-                        );
+                        if backup_type {
+                            if let Some(connection) =
+                                connections.iter().find(|c| c.id == self.draft.connection)
+                            {
+                                self.database_picker(&mut columns[1], connection);
+                            } else {
+                                columns[1].label(tr("Select a data source"));
+                            }
+                        } else {
+                            columns[1].add(
+                                egui::TextEdit::singleline(&mut self.draft.database)
+                                    .desired_width(f32::INFINITY)
+                                    .hint_text(tr("Default database")),
+                            );
+                        }
                     });
+                    if previous_source != self.draft.connection {
+                        self.source_changed(previous_source, connections);
+                        if backup_type
+                            && let Some(connection) =
+                                connections.iter().find(|c| c.id == self.draft.connection)
+                        {
+                            self.load_catalog(ui.ctx(), connection, false);
+                        }
+                    }
                     ui.add_space(8.0);
                     ui.horizontal_wrapped(|ui| {
                         ui.label(tr("Repeat every"));
@@ -433,6 +488,16 @@ impl Dialog {
                         ui.checkbox(&mut self.draft.enabled, tr("Enabled"));
                     });
                     ui.add_space(8.0);
+                    if backup_type {
+                        if let Some(connection) =
+                            connections.iter().find(|c| c.id == self.draft.connection)
+                        {
+                            self.backup_configuration(ui, connection, p);
+                        } else {
+                            ui.label(tr("Select a data source that supports backups."));
+                        }
+                        return;
+                    }
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(tr("SQL")).strong());
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

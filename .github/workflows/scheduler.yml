@@ -1,4 +1,4 @@
-name: SQL scheduler
+name: Scheduled SQL and backups
 
 on:
   push:
@@ -8,6 +8,11 @@ on:
       - "src/config.rs"
       - "src/app.rs"
       - "src/main.rs"
+      - "src/ui/workflow_dialog.rs"
+      - "src/ui/backup_dialog.rs"
+      - "src/ui/schema_search.rs"
+      - "src/ui/routine_dialog.rs"
+      - "src/ui/routine_execute.rs"
       - "tests/scheduler-background.py"
       - ".github/workflows/scheduler.yml"
   pull_request:
@@ -17,6 +22,11 @@ on:
       - "src/config.rs"
       - "src/app.rs"
       - "src/main.rs"
+      - "src/ui/workflow_dialog.rs"
+      - "src/ui/backup_dialog.rs"
+      - "src/ui/schema_search.rs"
+      - "src/ui/routine_dialog.rs"
+      - "src/ui/routine_execute.rs"
       - "tests/scheduler-background.py"
       - ".github/workflows/scheduler.yml"
   workflow_dispatch:
@@ -40,6 +50,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked
       - run: "cargo test --locked scheduler::"
+      - run: cargo test --locked footer_actions_stay_visible
       - if: runner.os != 'Windows'
         run: python3 tests/scheduler-background.py target/debug/datacraft
       - name: Exercise the Linux user service

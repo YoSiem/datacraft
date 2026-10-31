@@ -1,10 +1,11 @@
-//! Durable SQL schedules shared by the application and its background process.
+//! Durable tasks shared by the application and its background process.
 
 use anyhow::{Context, bail};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::path::Path;
 use std::time::Duration;
 
+pub mod backup;
 pub mod dialog;
 mod service;
 
@@ -73,14 +74,14 @@ pub fn run_background() -> anyhow::Result<()> {
             let spawned = std::thread::Builder::new()
                 .name("sql-scheduled-job".into())
                 .spawn(move || {
-                    let message = match std::panic::catch_unwind(|| execute(&job)) {
-                        Ok(Ok(())) => None,
-                        Ok(Err(error)) => Some(format!("{error:#}")),
-                        Err(_) => Some("SQL task stopped unexpectedly".into()),
+                    let (failed, message) = match std::panic::catch_unwind(|| execute(&job)) {
+                        Ok(Ok(destination)) => (false, destination.unwrap_or_default()),
+                        Ok(Err(error)) => (true, format!("{error:#}")),
+                        Err(_) => (true, "Scheduled task stopped unexpectedly".into()),
                     };
                     loop {
                         match Store::open(&path)
-                            .and_then(|mut store| store.finish(run_id, now(), message.as_deref()))
+                            .and_then(|mut store| store.complete(run_id, now(), failed, &message))
                         {
                             Ok(()) => break,
                             Err(error) => {
@@ -105,7 +106,7 @@ pub fn run_background() -> anyhow::Result<()> {
     }
 }
 
-fn execute(job: &Job) -> anyhow::Result<()> {
+fn execute(job: &Job) -> anyhow::Result<Option<String>> {
     let cfg = crate::config::load_background_connection(job.connection)?;
     let mut secrets = vec![
         cfg.password.clone(),
@@ -125,9 +126,47 @@ fn execute(job: &Job) -> anyhow::Result<()> {
     })
 }
 
-fn execute_with_config(job: &Job, mut cfg: crate::db::ConnectionConfig) -> anyhow::Result<()> {
+fn execute_with_config(
+    job: &Job,
+    mut cfg: crate::db::ConnectionConfig,
+) -> anyhow::Result<Option<String>> {
     use crate::db::{Driver, Session};
 
+    if let Some(backup) = &job.backup {
+        let database = if !job.database.is_empty() {
+            job.database.as_str()
+        } else if cfg.driver == Driver::Sqlite {
+            "main"
+        } else {
+            cfg.database.as_str()
+        };
+        if cfg.driver == Driver::Oracle && database != cfg.database {
+            bail!(crate::i18n::tr(
+                "Oracle backup tasks must use the saved connection service"
+            ));
+        }
+        if cfg.ask_password {
+            bail!("Save the data source password before running a task in the background");
+        }
+        let request = backup.request(cfg.driver, database)?;
+        let destination = match cfg.driver {
+            Driver::Oracle => format!("{}/{}", request.directory, request.destination),
+            Driver::Snowflake => format!(
+                "{}.{}.{}",
+                request.db, request.directory, request.destination
+            ),
+            _ => request.destination.clone(),
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(crate::db::backup::run(
+            cfg,
+            request,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        ))?;
+        return Ok(Some(destination));
+    }
     if cfg.driver.is_nosql() {
         bail!("This data source does not use SQL");
     }
@@ -167,7 +206,7 @@ fn execute_with_config(job: &Job, mut cfg: crate::db::ConnectionConfig) -> anyho
         for statement in statements {
             session.execute(&statement.text, 1).await?;
         }
-        Ok(())
+        Ok(None)
     })
 }
 
@@ -178,6 +217,7 @@ pub struct Job {
     pub connection: u64,
     pub database: String,
     pub sql: String,
+    pub backup: Option<backup::ScheduledBackup>,
     pub interval_seconds: i64,
     pub enabled: bool,
     pub next_run: i64,
@@ -206,12 +246,13 @@ impl Store {
                 .mode(0o600)
                 .open(path)?;
         }
-        let db = Connection::open(path)
+        let mut db = Connection::open(path)
             .with_context(|| format!("open schedule database {}", path.display()))?;
         db.busy_timeout(Duration::from_secs(5))?;
-        db.execute_batch(
-            "PRAGMA foreign_keys = ON;
-             CREATE TABLE IF NOT EXISTS jobs (
+        db.execute_batch("PRAGMA foreign_keys = ON;")?;
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS jobs (
                  id INTEGER PRIMARY KEY,
                  name TEXT NOT NULL,
                  connection INTEGER NOT NULL,
@@ -219,7 +260,8 @@ impl Store {
                  sql_text TEXT NOT NULL,
                  interval_seconds INTEGER NOT NULL CHECK(interval_seconds > 0),
                  enabled INTEGER NOT NULL CHECK(enabled IN (0, 1)),
-                 next_run INTEGER NOT NULL
+                 next_run INTEGER NOT NULL,
+                 backup_json TEXT
              );
              CREATE TABLE IF NOT EXISTS runs (
                  id INTEGER PRIMARY KEY,
@@ -231,11 +273,20 @@ impl Store {
              );
              CREATE INDEX IF NOT EXISTS runs_job ON runs(job_id, id DESC);",
         )?;
+        let has_backup: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('jobs') WHERE name='backup_json')",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_backup {
+            tx.execute("ALTER TABLE jobs ADD COLUMN backup_json TEXT", [])?;
+        }
+        tx.commit()?;
         Ok(Self(db))
     }
 
     pub fn jobs(&self) -> anyhow::Result<Vec<Job>> {
-        let mut stmt = self.0.prepare("SELECT id, name, connection, database_name, sql_text, interval_seconds, enabled, next_run FROM jobs ORDER BY name, id")?;
+        let mut stmt = self.0.prepare("SELECT id, name, connection, database_name, sql_text, interval_seconds, enabled, next_run, backup_json FROM jobs ORDER BY name, id")?;
         let rows = stmt.query_map([], read_job)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
@@ -258,6 +309,9 @@ impl Store {
     pub fn save(&mut self, job: &Job, now: i64) -> anyhow::Result<i64> {
         validate(job, now)?;
         let connection = i64::try_from(job.connection).context("connection ID is too large")?;
+        let backup = job.backup.as_ref().map(serde_json::to_string).transpose()?;
+        // Older daemons only understand SQL; a backup must fail harmlessly there.
+        let sql = if backup.is_some() { "" } else { &job.sql };
         let next_run = now
             .checked_add(job.interval_seconds)
             .context("interval is too large")?;
@@ -265,10 +319,10 @@ impl Store {
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let id = if job.id == 0 {
-            tx.execute("INSERT INTO jobs(name, connection, database_name, sql_text, interval_seconds, enabled, next_run) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)", params![job.name, connection, job.database, job.sql, job.interval_seconds, job.enabled, next_run])?;
+            tx.execute("INSERT INTO jobs(name, connection, database_name, sql_text, interval_seconds, enabled, next_run, backup_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)", params![job.name, connection, job.database, sql, job.interval_seconds, job.enabled, next_run, backup])?;
             tx.last_insert_rowid()
         } else {
-            let changed = tx.execute("UPDATE jobs SET name=?1, connection=?2, database_name=?3, sql_text=?4, interval_seconds=?5, enabled=?6, next_run=?7 WHERE id=?8 AND NOT EXISTS (SELECT 1 FROM runs WHERE job_id=?8 AND status='running')", params![job.name, connection, job.database, job.sql, job.interval_seconds, job.enabled, next_run, job.id])?;
+            let changed = tx.execute("UPDATE jobs SET name=?1, connection=?2, database_name=?3, sql_text=?4, interval_seconds=?5, enabled=?6, next_run=?7, backup_json=?9 WHERE id=?8 AND NOT EXISTS (SELECT 1 FROM runs WHERE job_id=?8 AND status='running')", params![job.name, connection, job.database, sql, job.interval_seconds, job.enabled, next_run, job.id, backup])?;
             if changed != 1 {
                 bail!("Job is running or no longer exists");
             }
@@ -303,7 +357,7 @@ impl Store {
         let tx = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let job = tx.query_row("SELECT id, name, connection, database_name, sql_text, interval_seconds, enabled, next_run FROM jobs WHERE enabled=1 AND next_run<=?1 AND NOT EXISTS (SELECT 1 FROM runs WHERE job_id=jobs.id AND status='running') ORDER BY next_run, id LIMIT 1", [now], read_job).optional()?;
+        let job = tx.query_row("SELECT id, name, connection, database_name, sql_text, interval_seconds, enabled, next_run, backup_json FROM jobs WHERE enabled=1 AND next_run<=?1 AND NOT EXISTS (SELECT 1 FROM runs WHERE job_id=jobs.id AND status='running') ORDER BY next_run, id LIMIT 1", [now], read_job).optional()?;
         let Some(job) = job else {
             tx.commit()?;
             return Ok(None);
@@ -325,17 +379,23 @@ impl Store {
     }
 
     pub fn finish(&mut self, run_id: i64, now: i64, error: Option<&str>) -> anyhow::Result<()> {
-        let status = if error.is_some() {
-            "failed"
-        } else {
-            "succeeded"
-        };
+        self.complete(run_id, now, error.is_some(), error.unwrap_or(""))
+    }
+
+    fn complete(
+        &mut self,
+        run_id: i64,
+        now: i64,
+        failed: bool,
+        message: &str,
+    ) -> anyhow::Result<()> {
+        let status = if failed { "failed" } else { "succeeded" };
         let tx = self
             .0
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let changed = tx.execute(
             "UPDATE runs SET finished=?1, status=?2, message=?3 WHERE id=?4 AND status='running'",
-            params![now, status, error.unwrap_or(""), run_id],
+            params![now, status, message, run_id],
         )?;
         if changed != 1 {
             bail!("Run is no longer active");
@@ -356,11 +416,11 @@ impl Store {
 
 fn validate(job: &Job, now: i64) -> anyhow::Result<()> {
     if job.name.trim().is_empty()
-        || job.sql.trim().is_empty()
+        || (job.backup.is_none() && job.sql.trim().is_empty())
         || job.interval_seconds <= 0
         || job.connection == 0
     {
-        bail!("A name, data source, SQL and a positive interval are required");
+        bail!("A name, data source, task and a positive interval are required");
     }
     i64::try_from(job.connection).context("connection ID is too large")?;
     now.checked_add(job.interval_seconds)
@@ -369,6 +429,17 @@ fn validate(job: &Job, now: i64) -> anyhow::Result<()> {
 }
 
 fn read_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
+    let backup: Option<String> = row.get(8)?;
+    let backup = backup
+        .map(|json| serde_json::from_str(&json))
+        .transpose()
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                8,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?;
     let connection: i64 = row.get(2)?;
     let connection = u64::try_from(connection).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(
@@ -383,6 +454,7 @@ fn read_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
         connection,
         database: row.get(3)?,
         sql: row.get(4)?,
+        backup,
         interval_seconds: row.get(5)?,
         enabled: row.get(6)?,
         next_run: row.get(7)?,
@@ -393,6 +465,27 @@ fn read_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<Job> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn backup_oracle_target_must_match_the_saved_service_before_connecting() {
+        let mut cfg = crate::db::ConnectionConfig::new(1, crate::db::Driver::Oracle);
+        cfg.database = "XE".into();
+        cfg.ask_password = true; // A bad implementation must stop without touching an external server.
+        let mut task = job();
+        task.database = "OTHER".into();
+        task.backup = Some(backup::ScheduledBackup::new(crate::db::Driver::Oracle));
+        let error = execute_with_config(&task, cfg.clone())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("saved connection service"), "{error}");
+        task.database = "XE".into();
+        assert!(
+            execute_with_config(&task, cfg)
+                .unwrap_err()
+                .to_string()
+                .contains("Save the data source password")
+        );
+    }
+
     fn job() -> Job {
         Job {
             id: 0,
@@ -400,10 +493,174 @@ mod tests {
             connection: 1,
             database: "main".into(),
             sql: "DELETE FROM t".into(),
+            backup: None,
             interval_seconds: 10,
             enabled: true,
             next_run: 0,
         }
+    }
+
+    #[test]
+    fn legacy_jobs_and_history_migrate_without_changes() {
+        let path = std::env::temp_dir().join(format!(
+            "datacraft-scheduler-migration-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let legacy = Connection::open(&path).unwrap();
+        legacy.execute_batch(
+            "CREATE TABLE jobs(id INTEGER PRIMARY KEY, name TEXT NOT NULL, connection INTEGER NOT NULL, database_name TEXT NOT NULL, sql_text TEXT NOT NULL, interval_seconds INTEGER NOT NULL, enabled INTEGER NOT NULL, next_run INTEGER NOT NULL);
+             CREATE TABLE runs(id INTEGER PRIMARY KEY, job_id INTEGER NOT NULL REFERENCES jobs(id), started INTEGER NOT NULL, finished INTEGER, status TEXT NOT NULL, message TEXT NOT NULL DEFAULT '');
+             INSERT INTO jobs VALUES(7, 'legacy SQL', 42, 'shop', 'DELETE FROM expired', 60, 1, 100);
+             INSERT INTO runs VALUES(9, 7, 1, 2, 'failed', 'original error');",
+        ).unwrap();
+        drop(legacy);
+        {
+            let store = Store::open(&path).unwrap();
+            let jobs = store.jobs().unwrap();
+            assert_eq!(jobs.len(), 1);
+            assert_eq!(jobs[0].id, 7);
+            assert_eq!(jobs[0].connection, 42);
+            assert_eq!(jobs[0].database, "shop");
+            assert_eq!(jobs[0].sql, "DELETE FROM expired");
+            assert_eq!(jobs[0].next_run, 100);
+            let runs = store.runs(7).unwrap();
+            assert_eq!(runs[0].id, 9);
+            assert_eq!(runs[0].message, "original error");
+            let payload: Option<String> = store
+                .0
+                .query_row("SELECT backup_json FROM jobs WHERE id=7", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(payload, None);
+        }
+        assert_eq!(Store::open(&path).unwrap().jobs().unwrap().len(), 1);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn backup_jobs_round_trip_without_sql_and_corrupt_payloads_are_reported() {
+        let mut store = Store::open(Path::new(":memory:")).unwrap();
+        let mut task = job();
+        task.sql.clear();
+        task.backup = Some(backup::ScheduledBackup::new(crate::db::Driver::Sqlite));
+        let id = store.save(&task, 0).unwrap();
+        assert_eq!(store.jobs().unwrap()[0].backup, task.backup);
+        task.id = id;
+        task.sql = "DELETE FROM important_data".into();
+        store.save(&task, 0).unwrap();
+        let sql: String = store
+            .0
+            .query_row("SELECT sql_text FROM jobs WHERE id=?1", [id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(
+            sql.is_empty(),
+            "old daemons must never execute stale SQL from backup jobs"
+        );
+        let (claimed, run) = store.claim_due(10).unwrap().unwrap();
+        assert_eq!(claimed.backup, task.backup);
+        store
+            .complete(run, 11, false, "backup destination")
+            .unwrap();
+        let runs = store.runs(id).unwrap();
+        assert_eq!(runs[0].status, "succeeded");
+        assert_eq!(runs[0].message, "backup destination");
+        store
+            .0
+            .execute(
+                "UPDATE jobs SET backup_json='not valid JSON' WHERE id=?1",
+                [id],
+            )
+            .unwrap();
+        assert!(store.jobs().is_err());
+        assert!(store.claim_due(20).is_err());
+    }
+
+    #[test]
+    fn repeated_sqlite_backups_preserve_snapshots_on_read_only_sources() {
+        use crate::db::{ConnectionConfig, Driver};
+        let root = std::env::temp_dir().join(format!(
+            "datacraft-scheduler-backup-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("source.sqlite");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE records(value INTEGER); INSERT INTO records VALUES(1)")
+            .unwrap();
+        let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
+        cfg.file_path = path.to_string_lossy().into_owned();
+        cfg.read_only = true;
+        let mut task = job();
+        let mut backup = backup::ScheduledBackup::new(Driver::Sqlite);
+        backup.folder = root.to_string_lossy().into_owned();
+        task.backup = Some(backup.clone());
+        // Empty database names fall back to SQLite's main database, never stale SQL.
+        task.database.clear();
+        task.sql = "DROP TABLE records".into();
+        let first = execute_with_config(&task, cfg.clone()).unwrap().unwrap();
+        db.execute("UPDATE records SET value=2", []).unwrap();
+        let second = execute_with_config(&task, cfg.clone()).unwrap().unwrap();
+        assert_ne!(first, second);
+        for (destination, value) in [(&first, 1), (&second, 2)] {
+            let snapshot = Connection::open(destination).unwrap();
+            assert_eq!(
+                snapshot
+                    .query_row("SELECT value FROM records", [], |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                value
+            );
+        }
+        assert_eq!(
+            db.query_row("SELECT value FROM records", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        backup.folder = root.join("missing").to_string_lossy().into_owned();
+        task.backup = Some(backup);
+        assert!(execute_with_config(&task, cfg.clone()).is_err());
+        assert!(Path::new(&first).is_file() && Path::new(&second).is_file());
+        task.database = "attached".into();
+        assert!(execute_with_config(&task, cfg).is_err());
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scheduled_server_backups_refuse_read_only_sources_before_connecting() {
+        use crate::db::{ConnectionConfig, Driver};
+        let mut task = job();
+        task.database = "shop".into();
+        let mut backup = backup::ScheduledBackup::new(Driver::MsSql);
+        backup.folder = "/server/backups".into();
+        task.backup = Some(backup);
+        let mut cfg = ConnectionConfig::new(1, Driver::MsSql);
+        cfg.read_only = true;
+        let error = execute_with_config(&task, cfg).unwrap_err();
+        assert!(format!("{error:#}").contains("read-only"));
+        task.database.clear();
+        let mut cfg = ConnectionConfig::new(1, Driver::MsSql);
+        cfg.database = "saved_database".into();
+        cfg.read_only = true;
+        let error = execute_with_config(&task, cfg).unwrap_err();
+        assert!(format!("{error:#}").contains("read-only"));
+    }
+
+    #[test]
+    fn scheduled_backups_require_a_resolved_database_and_saved_credentials() {
+        use crate::db::{ConnectionConfig, Driver};
+        let mut task = job();
+        task.database.clear();
+        task.backup = Some(backup::ScheduledBackup::new(Driver::Oracle));
+        let mut cfg = ConnectionConfig::new(1, Driver::Oracle);
+        cfg.database.clear();
+        let error = execute_with_config(&task, cfg).unwrap_err();
+        assert!(format!("{error:#}").contains("Choose a database"));
+        let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
+        cfg.ask_password = true;
+        assert!(format!("{:#}", execute_with_config(&task, cfg).unwrap_err()).contains("password"));
     }
 
     #[test]
