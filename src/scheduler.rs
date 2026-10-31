@@ -2,12 +2,50 @@
 
 use anyhow::{Context, bail};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::time::Duration;
 
 pub mod backup;
 pub mod dialog;
 mod service;
+
+#[cfg(unix)]
+type SqliteFileKey = (u64, u64);
+#[cfg(not(unix))]
+type SqliteFileKey = std::path::PathBuf;
+type SqliteGate = Arc<Mutex<()>>;
+
+static SQLITE_GATES: LazyLock<Mutex<HashMap<SqliteFileKey, Weak<Mutex<()>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn sqlite_gate(cfg: &crate::db::ConnectionConfig) -> anyhow::Result<Option<SqliteGate>> {
+    if cfg.driver != crate::db::Driver::Sqlite {
+        return Ok(None);
+    }
+    let path = cfg.file_path.trim();
+    #[cfg(unix)]
+    let key = {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(path)
+            .with_context(|| crate::i18n::trf("Could not open {path}", &[("path", &path)]))?;
+        (metadata.dev(), metadata.ino())
+    };
+    #[cfg(not(unix))]
+    let key = std::fs::canonicalize(path)
+        .with_context(|| crate::i18n::trf("Could not open {path}", &[("path", &path)]))?;
+    let mut gates = SQLITE_GATES
+        .lock()
+        .map_err(|_| anyhow::anyhow!(crate::i18n::tr("The SQLite task lock became unusable")))?;
+    gates.retain(|_, gate| gate.strong_count() != 0);
+    if let Some(gate) = gates.get(&key).and_then(Weak::upgrade) {
+        return Ok(Some(gate));
+    }
+    let gate = Arc::new(Mutex::new(()));
+    gates.insert(key, Arc::downgrade(&gate));
+    Ok(Some(gate))
+}
 
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
@@ -132,6 +170,12 @@ fn execute_with_config(
 ) -> anyhow::Result<Option<String>> {
     use crate::db::{Driver, Session};
 
+    if cfg.driver == Driver::Sqlite {
+        let trimmed = cfg.file_path.trim();
+        if trimmed.len() != cfg.file_path.len() {
+            cfg.file_path = trimmed.to_owned();
+        }
+    }
     if let Some(backup) = &job.backup {
         let database = if !job.database.is_empty() {
             job.database.as_str()
@@ -157,6 +201,16 @@ fn execute_with_config(
             ),
             _ => request.destination.clone(),
         };
+        // Native macOS runs failed with EBADF when scheduled backups and SQL overlapped.
+        let gate = sqlite_gate(&cfg)?;
+        let _access = gate
+            .as_ref()
+            .map(|gate| {
+                gate.lock().map_err(|_| {
+                    anyhow::anyhow!(crate::i18n::tr("The SQLite task lock became unusable"))
+                })
+            })
+            .transpose()?;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -193,6 +247,15 @@ fn execute_with_config(
     if !job.database.trim().is_empty() {
         cfg.database.clone_from(&job.database);
     }
+    let gate = sqlite_gate(&cfg)?;
+    let _access = gate
+        .as_ref()
+        .map(|gate| {
+            gate.lock().map_err(|_| {
+                anyhow::anyhow!(crate::i18n::tr("The SQLite task lock became unusable"))
+            })
+        })
+        .transpose()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -509,6 +572,83 @@ mod tests {
             enabled: true,
             next_run: 0,
         }
+    }
+
+    #[test]
+    fn sqlite_gate_serializes_file_aliases_but_allows_other_files() {
+        use crate::db::{ConnectionConfig, Driver};
+        use std::sync::mpsc;
+
+        let root =
+            std::env::temp_dir().join(format!("datacraft-scheduler-gate-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("source.sqlite");
+        let other = root.join("other.sqlite");
+        std::fs::write(&path, []).unwrap();
+        std::fs::write(&other, []).unwrap();
+        let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
+        cfg.file_path = path.to_string_lossy().into_owned();
+        let gate = sqlite_gate(&cfg).unwrap().unwrap();
+        let held = gate.lock().unwrap();
+        let aliases = vec![root.join(".").join("source.sqlite")];
+        #[cfg(unix)]
+        let aliases = {
+            let mut aliases = aliases;
+            let hard_link = root.join("linked.sqlite");
+            std::fs::hard_link(&path, &hard_link).unwrap();
+            aliases.push(hard_link);
+            aliases
+        };
+        let mut workers = Vec::new();
+        let (entered, waiting) = mpsc::channel();
+        for alias in aliases {
+            let mut cfg = cfg.clone();
+            cfg.file_path = format!(" {} ", alias.display());
+            let entered = entered.clone();
+            let (attempted, attempt) = mpsc::channel();
+            workers.push(std::thread::spawn(move || {
+                let gate = sqlite_gate(&cfg).unwrap().unwrap();
+                assert!(matches!(
+                    gate.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+                attempted.send(()).unwrap();
+                let _held = gate.lock().unwrap();
+                entered.send(()).unwrap();
+            }));
+            attempt.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        let mut other_cfg = cfg;
+        other_cfg.file_path = other.to_string_lossy().into_owned();
+        let (independent, proceeded) = mpsc::channel();
+        let other_worker = std::thread::spawn(move || {
+            let gate = sqlite_gate(&other_cfg).unwrap().unwrap();
+            let _held = gate.lock().unwrap();
+            independent.send(()).unwrap();
+        });
+        proceeded.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(waiting.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        drop(held);
+        for worker in workers {
+            waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+            worker.join().unwrap();
+        }
+        other_worker.join().unwrap();
+        drop(gate);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn sqlite_gate_rejects_missing_files_and_does_not_inspect_other_drivers() {
+        use crate::db::{ConnectionConfig, Driver};
+        let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
+        cfg.file_path = std::env::temp_dir()
+            .join(uuid::Uuid::new_v4().to_string())
+            .to_string_lossy()
+            .into_owned();
+        assert!(sqlite_gate(&cfg).is_err());
+        cfg.driver = Driver::Postgres;
+        assert!(sqlite_gate(&cfg).unwrap().is_none());
     }
 
     #[cfg(unix)]

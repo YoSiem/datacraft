@@ -65,8 +65,10 @@ startup entry through the system's service or startup settings if desired.
 The first execution is due after the configured interval. Missed intervals are
 not replayed individually, and one task never runs concurrently with itself.
 If an execution takes longer than its interval, its next run is scheduled after
-it finishes. A maximum of four tasks run at once. The history shows the last
-100 runs per task and records failures and interrupted runs. If the process or
+it finishes. A maximum of four tasks run at once. SQL and backup tasks for the
+same SQLite path run sequentially; Unix also recognizes aliases of the same
+file. Tasks for other files and data sources can still run in parallel. The
+history shows the last 100 runs per task and records failures and interrupted runs. If the process or
 computer stops during a statement, the database may have completed it even if
 DataCraft could not record the outcome; inspect the database before retrying.
 SQL statements in a task run in order and stop at the first error. They are not

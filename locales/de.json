@@ -1190,6 +1190,7 @@
     "Task type": "Aufgabentyp",
     "The folder is on SQL Server, not on this computer.": "Der Ordner liegt auf SQL Server, nicht auf diesem Computer.",
     "The native backup utility must be installed on this computer.": "Das native Sicherungsprogramm muss auf diesem Computer installiert sein.",
-    "Oracle backup tasks must use the saved connection service": "Oracle-Sicherungen müssen den Dienst der gespeicherten Verbindung verwenden"
+    "Oracle backup tasks must use the saved connection service": "Oracle-Sicherungen müssen den Dienst der gespeicherten Verbindung verwenden",
+    "The SQLite task lock became unusable": "Die SQLite-Aufgabensperre ist nicht mehr verwendbar"
   }
 }

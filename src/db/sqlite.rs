@@ -66,28 +66,7 @@ impl SqliteSession {
 
     pub async fn execute(&mut self, sql: &str, max_rows: usize) -> anyhow::Result<Vec<ResultSet>> {
         let sql = sql.to_string();
-        self.with_conn(move |conn| {
-            let result = run_batch(conn, &sql, max_rows);
-            #[cfg(all(debug_assertions, target_os = "macos"))]
-            let result = result.map_err(|error| {
-                if std::env::var_os("DATACRAFT_TEST_DATA_DIR").is_some()
-                    && error.downcast_ref::<rusqlite::Error>().is_some_and(|error| {
-                        matches!(error, rusqlite::Error::SqliteFailure(code, _) if code.extended_code == rusqlite::ffi::SQLITE_IOERR_LOCK)
-                    })
-                {
-                    // SAFETY: conn is alive and exclusively held by with_conn's mutex. No SQLite call is running;
-                    // this reads SQLite's diagnostic errno without mutating the connection or executing SQL.
-                    let errno = unsafe { rusqlite::ffi::sqlite3_system_errno(conn.handle()) };
-                    let descriptor_info = conn.path().and_then(|path| {
-                        std::process::Command::new("/usr/sbin/lsof")
-                            .args(["-a", "-p", &std::process::id().to_string(), "-Ffaln", path])
-                            .output().ok()
-                    }).map(|output| String::from_utf8_lossy(&output.stdout).into_owned());
-                    error.context(format!("SQLite fixture lock diagnostic: system_errno={errno}, read_only={:?}, descriptors={descriptor_info:?}", conn.is_readonly("main")))
-                } else { error }
-            });
-            result
-        }).await
+        self.with_conn(move |conn| run_batch(conn, &sql, max_rows)).await
     }
 
     pub async fn apply_changes(&mut self, statements: &[String]) -> anyhow::Result<u64> {

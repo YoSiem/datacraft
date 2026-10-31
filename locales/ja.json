@@ -1190,6 +1190,7 @@
     "Task type": "タスクの種類",
     "The folder is on SQL Server, not on this computer.": "フォルダーはこのコンピューターではなくSQL Server上にあります。",
     "The native backup utility must be installed on this computer.": "このコンピューターにネイティブバックアップツールが必要です。",
-    "Oracle backup tasks must use the saved connection service": "Oracleバックアップは保存済み接続のサービスを使用する必要があります"
+    "Oracle backup tasks must use the saved connection service": "Oracleバックアップは保存済み接続のサービスを使用する必要があります",
+    "The SQLite task lock became unusable": "SQLiteタスクのロックが使用できなくなりました"
   }
 }
