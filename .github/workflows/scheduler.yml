@@ -39,8 +39,7 @@ jobs:
       - run: rustup default stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --locked
-      - if: runner.os != 'Windows'
-        run: "cargo test --locked scheduler::"
+      - run: "cargo test --locked scheduler::"
       - if: runner.os != 'Windows'
         run: python3 tests/scheduler-background.py target/debug/datacraft
       - name: Exercise the Linux user service

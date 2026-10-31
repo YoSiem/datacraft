@@ -620,6 +620,7 @@ mod tests {
             dialog.draft.name = "Refresh daily sales".into();
             dialog.draft.sql = "INSERT INTO daily_sales (day, total)\nSELECT date(created_at), SUM(amount)\nFROM orders\nGROUP BY date(created_at);".into();
             dialog.draft.interval_seconds = 300;
+            dialog.draft.next_run = 1793448300;
             dialog.set_draft(dialog.draft.clone());
             dialog.selected = Some(1);
             dialog.jobs = vec![
