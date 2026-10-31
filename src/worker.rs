@@ -63,6 +63,10 @@ pub enum Request {
     },
     /// The real definition of a view (for "Edit View…" and "Generate DDL").
     ViewDefinition { conn: ConnId, db: String, schema: String, view: String, request_id: u64 },
+    /// The procedures and functions of a database.
+    LoadRoutines { conn: ConnId, db: String },
+    /// A routine's definition (for "Edit…", "Execute…" and "Generate DDL").
+    RoutineDefinition { routine: crate::db::routines::RoutineRef, request_id: u64 },
     /// "New Database": the server's character sets, collations, roles… for the dialog.
     DatabaseChoices { conn: ConnId },
     /// "Modify Table…": the table's full structure (defaults, primary key, indexes).
@@ -128,6 +132,8 @@ pub enum Response {
         result: Result<Vec<crate::db::object_info::ObjectInfoRow>, String>,
     },
     ViewDefinition { conn: ConnId, request_id: u64, result: Result<crate::db::views::ViewDefinition, String> },
+    RoutinesLoaded { conn: ConnId, db: String, result: Result<Vec<crate::db::routines::RoutineInfo>, String> },
+    RoutineDefinition { conn: ConnId, request_id: u64, result: Result<Box<crate::db::routines::RoutineDefinition>, String> },
     /// `results` holds what ran before the error (if there was one).
     Executed {
         console: ConsoleId,
@@ -436,6 +442,49 @@ async fn fetch_view_definition(state: &State, conn: ConnId, db: &str, schema: &s
     result
 }
 
+enum RoutineQuery<'a> {
+    List,
+    Definition(&'a crate::db::routines::RoutineRef),
+}
+
+enum RoutineReply {
+    List(Vec<crate::db::routines::RoutineInfo>),
+    Definition(Box<crate::db::routines::RoutineDefinition>),
+}
+
+/// Routines of `db`, or one's definition, on the metadata session (15 s at most, like
+/// `fetch_object_info`).
+async fn fetch_routines(state: &State, conn: ConnId, db: &str, query: RoutineQuery<'_>) -> Result<RoutineReply, String> {
+    let Some(driver) = state.live.lock().await.get(&conn).map(|l| l.cfg.driver) else {
+        return Err(tr("Connection lost").into());
+    };
+    let (session, target) = state.meta_session_for(conn, db).await.map_err(|e| format!("{e:#}"))?;
+    let mut s = session.lock().await;
+    let cancel = s.cancel_handle();
+    let run = async {
+        s.use_database(&target).await?;
+        match query {
+            RoutineQuery::List => s.list_routines(driver, &target).await.map(RoutineReply::List),
+            RoutineQuery::Definition(r) => s.routine_definition(driver, r).await.map(|d| RoutineReply::Definition(Box::new(d))),
+        }
+    };
+    let (result, broken) = match tokio::time::timeout(std::time::Duration::from_secs(15), run).await {
+        Ok(result) => (result.map_err(|e| format!("{e:#}")), s.is_closed()),
+        Err(_) => {
+            let cancelled = match cancel {
+                Some(h) => h.cancel().await.is_ok(),
+                None => false,
+            };
+            (Err(tr("The routine request timed out").into()), !cancelled)
+        }
+    };
+    drop(s);
+    if broken {
+        state.forget_meta(conn, &session).await;
+    }
+    result
+}
+
 /// Users / roles, on the connection's metadata session for its default database (so the list
 /// does not wait behind a console).
 async fn fetch_users(state: &State, conn: ConnId, request: &crate::db::users::UsersRequest) -> Result<crate::db::users::UsersReply, String> {
@@ -628,6 +677,21 @@ async fn handle(req: Request, epoch: u64, state: &State) -> Vec<Response> {
         } => {
             let result = fetch_object_info(state, conn, &db, schema.as_deref(), None, false, request_id).await;
             vec![Response::ObjectCatalog { conn, request_id, result }]
+        }
+        Request::LoadRoutines { conn, db } => {
+            let result = fetch_routines(state, conn, &db, RoutineQuery::List).await.map(|r| match r {
+                RoutineReply::List(list) => list,
+                RoutineReply::Definition(_) => Vec::new(),
+            });
+            vec![Response::RoutinesLoaded { conn, db, result }]
+        }
+        Request::RoutineDefinition { routine, request_id } => {
+            let conn = routine.conn;
+            let result = fetch_routines(state, conn, &routine.db, RoutineQuery::Definition(&routine)).await.and_then(|r| match r {
+                RoutineReply::Definition(d) => Ok(d),
+                RoutineReply::List(_) => Err(tr("Not available for this engine").into()),
+            });
+            vec![Response::RoutineDefinition { conn, request_id, result }]
         }
         Request::ViewDefinition { conn, db, schema, view, request_id } => {
             let result = fetch_view_definition(state, conn, &db, &schema, &view).await;
@@ -865,6 +929,53 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         panic!("timed out waiting for the worker");
+    }
+
+    /// SQLite has no stored routines: the request answers with an empty list.
+    #[test]
+    fn sqlite_lists_no_routines() {
+        let path = std::env::temp_dir().join(format!("datacraft-routines-{}.db", uuid::Uuid::new_v4()));
+        rusqlite::Connection::open(&path).unwrap();
+        let w = Worker::start(egui::Context::default());
+        let mut cfg = ConnectionConfig::new(31, Driver::Sqlite);
+        cfg.file_path = path.to_string_lossy().into_owned();
+        w.send(Request::Connect(cfg));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 31, .. }));
+        w.send(Request::LoadRoutines { conn: 31, db: "main".into() });
+        let Response::RoutinesLoaded { result, .. } = wait_for(&w, |r| matches!(r, Response::RoutinesLoaded { conn: 31, .. })) else { unreachable!() };
+        assert_eq!(result, Ok(Vec::new()));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The routine requests on a real PostgreSQL (DATACRAFT_PG_HOST, as `db::postgres`'s tests).
+    #[test]
+    #[ignore]
+    fn postgres_routines_through_the_worker() {
+        let Ok(host) = std::env::var("DATACRAFT_PG_HOST") else { return };
+        let var = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
+        let mut cfg = ConnectionConfig::new(32, Driver::Postgres);
+        cfg.host = host;
+        cfg.port = var("DATACRAFT_PG_PORT", "5432").parse().unwrap();
+        cfg.user = var("DATACRAFT_PG_USER", "postgres");
+        cfg.password = var("DATACRAFT_PG_PASSWORD", "");
+        cfg.database = var("DATACRAFT_PG_DB", "postgres");
+        let db = cfg.database.clone();
+        let w = Worker::start(egui::Context::default());
+        w.send(Request::Connect(cfg));
+        wait_for(&w, |r| matches!(r, Response::Connected { conn: 32, .. }));
+        let create = "create or replace function public.dc_worker_twice(n integer) returns integer language sql immutable as $$ select n * 2 $$";
+        w.send(Request::RunDdl { conn: 32, db: None, statements: vec![create.into()], close_db: None, transaction: false });
+        wait_for(&w, |r| matches!(r, Response::DdlDone { conn: 32, result: Ok(_) }));
+        w.send(Request::LoadRoutines { conn: 32, db: db.clone() });
+        let Response::RoutinesLoaded { result, .. } = wait_for(&w, |r| matches!(r, Response::RoutinesLoaded { conn: 32, .. })) else { unreachable!() };
+        let info = result.unwrap().into_iter().find(|r| r.name == "dc_worker_twice").expect("listed");
+        w.send(Request::RoutineDefinition { routine: crate::db::routines::RoutineRef::new(32, &db, &info), request_id: 9 });
+        let Response::RoutineDefinition { result, .. } = wait_for(&w, |r| matches!(r, Response::RoutineDefinition { request_id: 9, .. })) else { unreachable!() };
+        let def = result.unwrap();
+        assert!(def.ddl.contains("dc_worker_twice"));
+        assert_eq!(def.spec.unwrap().body.trim(), "select n * 2");
+        w.send(Request::RunDdl { conn: 32, db: None, statements: vec!["drop function public.dc_worker_twice(integer)".into()], close_db: None, transaction: false });
+        wait_for(&w, |r| matches!(r, Response::DdlDone { conn: 32, result: Ok(_) }));
     }
 
     #[test]

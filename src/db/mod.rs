@@ -22,6 +22,7 @@ pub mod oracle;
 pub mod plan;
 pub mod postgres;
 pub mod redis_db;
+pub mod routines;
 pub mod snowflake;
 pub mod ssh;
 pub mod tls;

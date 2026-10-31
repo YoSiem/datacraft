@@ -121,6 +121,7 @@ Ctrl+F, or Command+F on macOS, searches the currently loaded cells. **Find in Sc
 - **Copy tables:** transfer selected data between connections, databases or schemas, translate column types between engines and optionally include related rows through foreign keys.
 - **Mask values:** apply consistent per-column masking during table copies or exports.
 - **Manage objects:** create and modify tables and views, review generated DDL, and manage MySQL/MariaDB users or PostgreSQL roles and privileges.
+- **Procedures and functions:** browse, create and edit them with a parameter table, the engine's options and a live DDL preview, then execute them with typed arguments and see output parameters. See [procedures and functions](docs/routines.md).
 - **Back up databases:** open **Back up database…** from the Database Explorer, review engine-specific options and choose a destination. Jobs run in the background with cancellation and local history.
 - **Run SQL scripts:** **Run SQL Script…** on a connection or database runs one or more `.sql` files without opening them. They are read in pieces, so a dump of several GB doesn't fill memory, and each engine's separators are respected (`GO` on SQL Server, `DELIMITER` on MySQL, `/` on Oracle). Progress and Cancel are shown; a failing statement asks Retry, Skip, Skip All or Stop, and the summary lists each failure with its file and line.
 
@@ -275,8 +276,10 @@ cargo-xwin downloads the Windows SDK and requires acceptance of Microsoft's lice
 | [Table editor](docs/table-editor.md) | Keyboard navigation, selections, bulk edits and optional automatic saving |
 | [Navigation and search](docs/navigation-search.md) | Table search, schema search, local groups/colors and tab management |
 | [Database backups](docs/database-backups.md) | Engine support, native utilities, destinations and cancellation |
+| [Procedures and functions](docs/routines.md) | Browsing, the routine dialog, editing per engine and executing with parameters |
 | [Application icon](docs/application-icon.md) | Shared artwork and native Windows/macOS icon assets |
 | [Window header](docs/window-chrome.md) | Platform-specific window controls and validation notes |
+| [Low-power rendering](docs/low-power-rendering.md) | Software adapters, Remote Desktop and frame statistics |
 | [Screenshots](docs/screenshots/readme/README.md) | Reproduce the full-window documentation captures |
 
 ## Contributing
