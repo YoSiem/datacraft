@@ -237,12 +237,17 @@ pub struct Store(Connection);
 #[cfg(unix)]
 fn create_store_file(path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
+    match std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(false)
+        .create_new(true)
         .mode(0o600)
-        .open(path)?;
+        .open(path)
+    {
+        Ok(file) => drop(file),
+        // Closing another descriptor to an existing SQLite file drops this process's POSIX locks.
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
     Ok(())
 }
 
