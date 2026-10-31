@@ -1066,6 +1066,25 @@
     "Could not start scheduler operation": "Não foi possível iniciar o agendador",
     "Scheduler operation stopped unexpectedly": "A operação do agendador terminou inesperadamente",
     "Background scheduler is running": "O agendador está em execução em segundo plano",
-    "Background scheduler is not running": "O agendador não está em execução em segundo plano"
+    "Background scheduler is not running": "O agendador não está em execução em segundo plano",
+    "Configuration": "Configuração",
+    "Days": "Dias",
+    "Default database": "Banco de dados padrão",
+    "Discard changes": "Descartar alterações",
+    "Discard changes to this task?": "Descartar as alterações desta tarefa?",
+    "History": "Histórico",
+    "Hours": "Horas",
+    "Keep editing": "Continuar editando",
+    "Manage scheduled queries": "Gerencie consultas agendadas",
+    "Minutes": "Minutos",
+    "No runs yet": "Nenhuma execução",
+    "No saved tasks": "Nenhuma tarefa salva",
+    "Paused": "Pausada",
+    "Repeat every": "Repetir a cada",
+    "Seconds": "Segundos",
+    "Task details": "Detalhes da tarefa",
+    "Task name": "Nome da tarefa",
+    "Working…": "Processando…",
+    "Complete the task name, data source, SQL and interval.": "Preencha o nome, a fonte de dados, o SQL e o intervalo."
   }
 }

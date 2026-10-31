@@ -1066,6 +1066,25 @@
     "Could not start scheduler operation": "Impossible de démarrer le planificateur",
     "Scheduler operation stopped unexpectedly": "Le planificateur s’est arrêté de manière inattendue",
     "Background scheduler is running": "Le planificateur fonctionne en arrière-plan",
-    "Background scheduler is not running": "Le planificateur ne fonctionne pas en arrière-plan"
+    "Background scheduler is not running": "Le planificateur ne fonctionne pas en arrière-plan",
+    "Configuration": "Configuration",
+    "Days": "Jours",
+    "Default database": "Base de données par défaut",
+    "Discard changes": "Abandonner les modifications",
+    "Discard changes to this task?": "Abandonner les modifications de cette tâche ?",
+    "History": "Historique",
+    "Hours": "Heures",
+    "Keep editing": "Continuer la modification",
+    "Manage scheduled queries": "Gérer les requêtes planifiées",
+    "Minutes": "Minutes",
+    "No runs yet": "Aucune exécution",
+    "No saved tasks": "Aucune tâche enregistrée",
+    "Paused": "En pause",
+    "Repeat every": "Répéter toutes les",
+    "Seconds": "Secondes",
+    "Task details": "Détails de la tâche",
+    "Task name": "Nom de la tâche",
+    "Working…": "Traitement…",
+    "Complete the task name, data source, SQL and interval.": "Renseignez le nom, la source de données, le SQL et l’intervalle."
   }
 }

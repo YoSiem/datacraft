@@ -1066,6 +1066,25 @@
     "Could not start scheduler operation": "无法启动计划程序操作",
     "Scheduler operation stopped unexpectedly": "计划程序操作意外停止",
     "Background scheduler is running": "计划程序正在后台运行",
-    "Background scheduler is not running": "计划程序未在后台运行"
+    "Background scheduler is not running": "计划程序未在后台运行",
+    "Configuration": "配置",
+    "Days": "天",
+    "Default database": "默认数据库",
+    "Discard changes": "放弃更改",
+    "Discard changes to this task?": "放弃对此任务的更改？",
+    "History": "历史记录",
+    "Hours": "小时",
+    "Keep editing": "继续编辑",
+    "Manage scheduled queries": "管理定时查询",
+    "Minutes": "分钟",
+    "No runs yet": "尚无运行记录",
+    "No saved tasks": "没有已保存的任务",
+    "Paused": "已暂停",
+    "Repeat every": "重复间隔",
+    "Seconds": "秒",
+    "Task details": "任务详情",
+    "Task name": "任务名称",
+    "Working…": "正在处理…",
+    "Complete the task name, data source, SQL and interval.": "请填写任务名称、数据源、SQL 和执行间隔。"
   }
 }

@@ -1066,6 +1066,25 @@
     "Could not start scheduler operation": "Nie można rozpocząć operacji harmonogramu",
     "Scheduler operation stopped unexpectedly": "Operacja harmonogramu zakończyła się nieoczekiwanie",
     "Background scheduler is running": "Harmonogram działa w tle",
-    "Background scheduler is not running": "Harmonogram w tle nie działa"
+    "Background scheduler is not running": "Harmonogram w tle nie działa",
+    "Configuration": "Konfiguracja",
+    "Days": "Dni",
+    "Default database": "Domyślna baza danych",
+    "Discard changes": "Odrzuć zmiany",
+    "Discard changes to this task?": "Odrzucić zmiany w tym zadaniu?",
+    "History": "Historia",
+    "Hours": "Godziny",
+    "Keep editing": "Kontynuuj edycję",
+    "Manage scheduled queries": "Zarządzaj cyklicznymi zapytaniami",
+    "Minutes": "Minuty",
+    "No runs yet": "Brak wykonań",
+    "No saved tasks": "Brak zapisanych zadań",
+    "Paused": "Wstrzymane",
+    "Repeat every": "Wykonuj co",
+    "Seconds": "Sekundy",
+    "Task details": "Szczegóły zadania",
+    "Task name": "Nazwa zadania",
+    "Working…": "Przetwarzanie…",
+    "Complete the task name, data source, SQL and interval.": "Uzupełnij nazwę zadania, źródło danych, SQL i interwał."
   }
 }

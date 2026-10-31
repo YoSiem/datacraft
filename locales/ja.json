@@ -1066,6 +1066,25 @@
     "Could not start scheduler operation": "スケジューラーを開始できません",
     "Scheduler operation stopped unexpectedly": "スケジューラーが予期せず停止しました",
     "Background scheduler is running": "スケジューラーはバックグラウンドで実行中です",
-    "Background scheduler is not running": "スケジューラーはバックグラウンドで実行されていません"
+    "Background scheduler is not running": "スケジューラーはバックグラウンドで実行されていません",
+    "Configuration": "設定",
+    "Days": "日",
+    "Default database": "既定のデータベース",
+    "Discard changes": "変更を破棄",
+    "Discard changes to this task?": "このタスクの変更を破棄しますか？",
+    "History": "履歴",
+    "Hours": "時間",
+    "Keep editing": "編集を続ける",
+    "Manage scheduled queries": "定期クエリを管理",
+    "Minutes": "分",
+    "No runs yet": "実行履歴はありません",
+    "No saved tasks": "保存されたタスクはありません",
+    "Paused": "一時停止",
+    "Repeat every": "実行間隔",
+    "Seconds": "秒",
+    "Task details": "タスクの詳細",
+    "Task name": "タスク名",
+    "Working…": "処理中…",
+    "Complete the task name, data source, SQL and interval.": "タスク名、データソース、SQL、実行間隔を入力してください。"
   }
 }

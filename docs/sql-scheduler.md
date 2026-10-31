@@ -1,11 +1,17 @@
 # Scheduled SQL tasks
 
 Open **File → SQL scheduler…** in the DataCraft application menu. Add a task,
-choose a saved SQL data source, enter its SQL and interval in seconds, then
+choose a saved SQL data source, enter its SQL and interval in seconds, minutes,
+hours or days, then
 confirm the SQL before saving. Leave the database field blank to use the data
 source's default database. A task can be paused without stopping an execution
 that is already in progress. Editing or deleting an active task is refused until
 that execution has finished; pausing prevents its next execution.
+
+The task list stays on the left, while **Configuration** provides the SQL editor
+and schedule settings and **History** shows recent executions and errors. Save
+and Cancel stay visible below both views. Switching tasks or closing with unsaved
+changes asks whether to keep editing or discard the draft.
 
 An enabled task starts a separate background process and registers it to start
 when the user signs in: the current user's Run entry on Windows, a LaunchAgent

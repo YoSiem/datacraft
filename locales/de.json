@@ -1066,6 +1066,25 @@
     "Could not start scheduler operation": "Zeitplanaktion konnte nicht gestartet werden",
     "Scheduler operation stopped unexpectedly": "Zeitplanaktion wurde unerwartet beendet",
     "Background scheduler is running": "Der Zeitplaner läuft im Hintergrund",
-    "Background scheduler is not running": "Der Zeitplaner läuft nicht im Hintergrund"
+    "Background scheduler is not running": "Der Zeitplaner läuft nicht im Hintergrund",
+    "Configuration": "Konfiguration",
+    "Days": "Tage",
+    "Default database": "Standarddatenbank",
+    "Discard changes": "Änderungen verwerfen",
+    "Discard changes to this task?": "Änderungen an dieser Aufgabe verwerfen?",
+    "History": "Verlauf",
+    "Hours": "Stunden",
+    "Keep editing": "Weiter bearbeiten",
+    "Manage scheduled queries": "Geplante Abfragen verwalten",
+    "Minutes": "Minuten",
+    "No runs yet": "Noch keine Ausführungen",
+    "No saved tasks": "Keine gespeicherten Aufgaben",
+    "Paused": "Pausiert",
+    "Repeat every": "Wiederholen alle",
+    "Seconds": "Sekunden",
+    "Task details": "Aufgabendetails",
+    "Task name": "Aufgabenname",
+    "Working…": "Wird verarbeitet…",
+    "Complete the task name, data source, SQL and interval.": "Aufgabenname, Datenquelle, SQL und Intervall ausfüllen."
   }
 }
