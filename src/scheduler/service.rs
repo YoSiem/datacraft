@@ -344,21 +344,27 @@ mod tests {
         };
         let id = store.save(&job, now() - 30).unwrap();
         let folder = profile.join("backups");
-        std::fs::create_dir(&folder).unwrap();
-        let mut backup = crate::scheduler::backup::ScheduledBackup::new(Driver::Sqlite);
-        backup.folder = folder.to_string_lossy().into_owned();
-        let backup_id = store
-            .save(
-                &Job {
-                    id: 0,
-                    name: "native backup test".into(),
-                    sql: String::new(),
-                    backup: Some(backup),
-                    ..job
-                },
-                now() - 30,
+        let backup_id = if std::env::var_os("DATACRAFT_TEST_SQL_ONLY").is_none() {
+            std::fs::create_dir(&folder).unwrap();
+            let mut backup = crate::scheduler::backup::ScheduledBackup::new(Driver::Sqlite);
+            backup.folder = folder.to_string_lossy().into_owned();
+            Some(
+                store
+                    .save(
+                        &Job {
+                            id: 0,
+                            name: "native backup test".into(),
+                            sql: String::new(),
+                            backup: Some(backup),
+                            ..job
+                        },
+                        now() - 30,
+                    )
+                    .unwrap(),
             )
-            .unwrap();
+        } else {
+            None
+        };
         let executable =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug/datacraft");
         #[cfg(target_os = "linux")]
@@ -381,7 +387,7 @@ mod tests {
         install(&executable).unwrap();
         wait_for_start().unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        for job_id in [id, backup_id] {
+        for job_id in std::iter::once(id).chain(backup_id) {
             loop {
                 let runs = store.runs(job_id).unwrap();
                 if let Some(run) = runs.first().filter(|run| run.status != "running") {
@@ -389,10 +395,14 @@ mod tests {
                         run.status,
                         "succeeded",
                         "job_id={job_id}, task={}, message={}",
-                        if job_id == backup_id { "backup" } else { "SQL" },
+                        if Some(job_id) == backup_id {
+                            "backup"
+                        } else {
+                            "SQL"
+                        },
                         run.message
                     );
-                    if job_id == backup_id {
+                    if Some(job_id) == backup_id {
                         let snapshot = rusqlite::Connection::open(&run.message).unwrap();
                         assert_eq!(
                             std::path::Path::new(&run.message).parent(),

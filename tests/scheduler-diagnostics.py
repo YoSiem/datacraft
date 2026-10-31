@@ -6,7 +6,7 @@ import sqlite3
 from contextlib import closing
 
 print("Diagnostic SQLite version:", sqlite3.sqlite_version)
-for name in ("datacraft-service", "datacraft-xdg"):
+for name in ("datacraft-service", "datacraft-xdg", "datacraft-sql-only"):
     profile = Path(os.environ["RUNNER_TEMP"]) / name
     print("Fixture:", profile)
     if not profile.exists():
