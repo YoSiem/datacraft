@@ -80,3 +80,6 @@ credentials and trust the SSH host key through the connection dialog first.
 An unavailable or locked credential store may prevent a run. Read-only data
 sources retain their existing restrictions. The task's SQL and execution
 history are stored locally; do not put passwords or tokens in SQL text.
+
+[UI previews and reproduction instructions](screenshots/scheduler/README.md)
+show the scheduler and related workflow dialogs on synthetic test data.
