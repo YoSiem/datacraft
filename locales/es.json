@@ -1191,6 +1191,7 @@
     "The folder is on SQL Server, not on this computer.": "La carpeta está en SQL Server, no en este equipo.",
     "The native backup utility must be installed on this computer.": "La utilidad nativa de copia debe estar instalada en este equipo.",
     "Oracle backup tasks must use the saved connection service": "Las tareas de copia de Oracle deben usar el servicio de la conexión guardada",
-    "The SQLite task lock became unusable": "El bloqueo de tareas SQLite dejó de funcionar"
+    "The SQLite task lock became unusable": "El bloqueo de tareas SQLite dejó de funcionar",
+    "Task saved; background scheduler error: {error}": "Tarea guardada; error del programador en segundo plano: {error}"
   }
 }

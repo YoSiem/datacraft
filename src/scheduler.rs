@@ -224,12 +224,12 @@ fn execute_with_config(
     if cfg.driver.is_nosql() {
         bail!("This data source does not use SQL");
     }
-    let statements = crate::sql::split_statements(&job.sql, cfg.driver);
-    if statements.is_empty() {
+    let batches = crate::sql::split_batches(&job.sql, cfg.driver);
+    if batches.is_empty() {
         bail!("The task contains no SQL statements");
     }
     if cfg.read_only
-        && statements
+        && crate::sql::split_statements(&job.sql, cfg.driver)
             .iter()
             .any(|statement| !crate::app::is_read_statement(cfg.driver, &statement.text))
     {
@@ -266,8 +266,8 @@ fn execute_with_config(
         if !job.database.trim().is_empty() {
             session.use_database(&job.database).await?;
         }
-        for statement in statements {
-            session.execute(&statement.text, 1).await?;
+        for batch in batches {
+            session.execute(&batch.text, 0).await?;
         }
         Ok(None)
     })
@@ -931,6 +931,89 @@ mod tests {
         store.finish(run, 36, None).unwrap();
         assert!(store.claim_due(100).unwrap().is_none());
         assert!(!store.jobs().unwrap()[0].enabled);
+    }
+
+    #[test]
+    fn sql_tasks_preserve_sqlite_trigger_bodies() {
+        use crate::db::{ConnectionConfig, Driver};
+        let path = std::env::temp_dir().join(format!(
+            "datacraft-scheduler-trigger-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE records(value INTEGER); CREATE TABLE audit(value INTEGER)")
+            .unwrap();
+        let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
+        cfg.file_path = path.to_string_lossy().into_owned();
+        let mut task = job();
+        task.sql = "CREATE TRIGGER IF NOT EXISTS record_insert AFTER INSERT ON records BEGIN
+                        INSERT INTO audit VALUES (new.value);
+                        INSERT INTO audit VALUES (new.value + 1);
+                    END;
+                    INSERT INTO records VALUES (7);"
+            .into();
+
+        let result = execute_with_config(&task, cfg);
+        let values: Vec<i64> = db
+            .prepare("SELECT value FROM audit ORDER BY value")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+
+        result.unwrap();
+        assert_eq!(values, [7, 8]);
+    }
+
+    #[test]
+    fn read_only_sql_tasks_check_every_statement_before_connecting() {
+        use crate::db::{ConnectionConfig, Driver};
+        for driver in [Driver::Sqlite, Driver::MsSql] {
+            let mut cfg = ConnectionConfig::new(1, driver);
+            cfg.read_only = true;
+            cfg.ask_password = true;
+            let mut task = job();
+            task.sql = "SELECT '--'; UPDATE records SET value = 2;".into();
+
+            let error = execute_with_config(&task, cfg).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("A read-only data source cannot run"),
+                "{driver:?}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn sql_tasks_stop_at_errors_beyond_the_preview_row_limit() {
+        use crate::db::{ConnectionConfig, Driver};
+        let path = std::env::temp_dir().join(format!(
+            "datacraft-scheduler-late-error-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE records(value INTEGER); INSERT INTO records VALUES (1)")
+            .unwrap();
+        let mut cfg = ConnectionConfig::new(1, Driver::Sqlite);
+        cfg.file_path = path.to_string_lossy().into_owned();
+        let mut task = job();
+        task.sql = "SELECT CASE WHEN x = 3 THEN abs(-9223372036854775808) ELSE x END
+                    FROM (SELECT 1 AS x UNION ALL SELECT 2 UNION ALL SELECT 3);
+                    UPDATE records SET value = 2;"
+            .into();
+
+        let result = execute_with_config(&task, cfg);
+        let value: i64 = db
+            .query_row("SELECT value FROM records", [], |row| row.get(0))
+            .unwrap();
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+
+        let error = result.expect_err("a later row must still fail the task");
+        assert!(format!("{error:#}").contains("integer overflow"));
+        assert_eq!(value, 1, "statements after the error must not execute");
     }
 
     #[test]

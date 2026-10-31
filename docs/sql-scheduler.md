@@ -11,7 +11,9 @@ that execution has finished; pausing prevents its next execution.
 The task list stays on the left, while **Configuration** provides the SQL editor
 and schedule settings and **History** shows recent executions and errors. Save
 and Cancel stay visible below both views. Switching tasks or closing with unsaved
-changes asks whether to keep editing or discard the draft.
+changes asks whether to keep editing or discard the draft. A saved task remains
+saved if background startup fails; the error is shown so startup can be retried
+without creating a duplicate task.
 
 ## Recurring backups without SQL
 
@@ -71,8 +73,10 @@ file. Tasks for other files and data sources can still run in parallel. The
 history shows the last 100 runs per task and records failures and interrupted runs. If the process or
 computer stops during a statement, the database may have completed it even if
 DataCraft could not record the outcome; inspect the database before retrying.
-SQL statements in a task run in order and stop at the first error. They are not
-automatically wrapped in a transaction.
+Tasks execute the same dialect-aware batches as the SQL console. Further batches
+are not submitted after an error; statements inside a batch follow the database
+engine's error semantics. Results are discarded after the entire execution is
+checked, and tasks are not automatically wrapped in a transaction.
 
 Background tasks use the saved data source settings and system credential
 store. They cannot answer password or SSH host-key prompts: save the required

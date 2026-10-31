@@ -44,7 +44,7 @@ impl Dialog {
             .corner_radius(12)
             .inner_margin(Margin::ZERO)
             .stroke(Stroke::new(1.0, p.popup_border));
-        egui::Modal::new(egui::Id::new("sql_scheduler"))
+        let response = egui::Modal::new(egui::Id::new("sql_scheduler"))
             .frame(frame)
             .show(ctx, |ui| {
                 let (outer, _) = ui.allocate_exact_size(size, Sense::hover());
@@ -350,7 +350,10 @@ impl Dialog {
                 });
             });
         if !self.confirm_save && !self.confirm_delete && self.pending_navigation.is_none() {
-            if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            if !response.any_popup_open
+                && ctx
+                    .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+            {
                 self.pending_navigation = Some(Navigation::Close);
             }
             if !busy

@@ -1191,6 +1191,7 @@
     "The folder is on SQL Server, not on this computer.": "A pasta está no SQL Server, não neste computador.",
     "The native backup utility must be installed on this computer.": "O utilitário nativo de backup deve estar instalado neste computador.",
     "Oracle backup tasks must use the saved connection service": "Backups Oracle devem usar o serviço da conexão salva",
-    "The SQLite task lock became unusable": "O bloqueio de tarefas SQLite deixou de funcionar"
+    "The SQLite task lock became unusable": "O bloqueio de tarefas SQLite deixou de funcionar",
+    "Task saved; background scheduler error: {error}": "Tarefa salva; erro do agendador em segundo plano: {error}"
   }
 }

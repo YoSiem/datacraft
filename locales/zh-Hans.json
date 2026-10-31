@@ -1191,6 +1191,7 @@
     "The folder is on SQL Server, not on this computer.": "该文件夹位于 SQL Server 上，而非本机。",
     "The native backup utility must be installed on this computer.": "本机必须安装原生备份工具。",
     "Oracle backup tasks must use the saved connection service": "Oracle 备份任务必须使用已保存连接的服务",
-    "The SQLite task lock became unusable": "SQLite 任务锁已无法使用"
+    "The SQLite task lock became unusable": "SQLite 任务锁已无法使用",
+    "Task saved; background scheduler error: {error}": "任务已保存；后台调度器出错：{error}"
   }
 }

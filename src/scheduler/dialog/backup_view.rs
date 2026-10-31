@@ -34,6 +34,7 @@ impl Dialog {
                     egui::ComboBox::from_id_salt("backup_database")
                         .width(width)
                         .truncate()
+                        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
                         .selected_text(if selected.is_empty() {
                             tr("Choose a database")
                         } else {
@@ -41,7 +42,12 @@ impl Dialog {
                         })
                         .show_ui(ui, |ui| {
                             for name in &names {
-                                ui.selectable_value(&mut self.draft.database, name.clone(), name);
+                                if ui
+                                    .selectable_value(&mut self.draft.database, name.clone(), name)
+                                    .clicked()
+                                {
+                                    ui.close();
+                                }
                             }
                             if !matches!(connection.driver, Driver::Sqlite | Driver::Oracle) {
                                 ui.separator();

@@ -97,7 +97,32 @@ struct Snapshot {
     selected: Option<i64>,
     update: DraftUpdate,
     notice: Option<&'static str>,
+    startup_error: Option<String>,
     running: bool,
+}
+
+fn save_task(
+    store: &mut Store,
+    job: &Job,
+    now: i64,
+    enable: impl FnOnce() -> anyhow::Result<()>,
+    status: impl FnOnce() -> anyhow::Result<bool>,
+) -> anyhow::Result<(i64, Option<String>, bool)> {
+    // Persist first: starting an idle daemon must not run the previous, overdue SQL.
+    let id = store.save(job, now)?;
+    let mut startup_error = if job.enabled {
+        enable().err().map(|error| format!("{error:#}"))
+    } else {
+        None
+    };
+    let running = match status() {
+        Ok(running) => running,
+        Err(error) => {
+            startup_error.get_or_insert_with(|| format!("{error:#}"));
+            false
+        }
+    };
+    Ok((id, startup_error, running))
 }
 
 pub struct Dialog {
@@ -405,18 +430,22 @@ impl Dialog {
             .spawn(move || {
                 let result = (|| -> anyhow::Result<Snapshot> {
                     let mut store = Store::open(&database_path()?)?;
+                    let mut startup_error = None;
+                    let mut saved_running = None;
                     let (selected, update, notice) = match action {
                         Action::Load => (selected, DraftUpdate::Keep, None),
                         Action::Save(job) => {
                             validate(&job, now())?;
-                            if job.enabled {
-                                service::enable()?;
-                            }
-                            (
-                                Some(store.save(&job, now())?),
-                                DraftUpdate::Replace,
-                                Some("Task saved"),
-                            )
+                            let (id, error, running) = save_task(
+                                &mut store,
+                                &job,
+                                now(),
+                                service::enable,
+                                service::is_running,
+                            )?;
+                            saved_running = Some(running);
+                            startup_error = error;
+                            (Some(id), DraftUpdate::Replace, Some("Task saved"))
                         }
                         Action::Delete(id) => {
                             store.delete(id)?;
@@ -445,7 +474,11 @@ impl Dialog {
                         selected,
                         update,
                         notice,
-                        running: service::is_running()?,
+                        startup_error,
+                        running: match saved_running {
+                            Some(running) => running,
+                            None => service::is_running()?,
+                        },
                     })
                 })();
                 let _ = sender.send(result.map_err(|error| format!("{error:#}")));
@@ -503,9 +536,19 @@ impl Dialog {
                     }
                     DraftUpdate::Keep => {}
                 }
-                self.message = snapshot
-                    .notice
-                    .map(|notice| (tr(notice).to_string(), false));
+                self.message = if let Some(error) = snapshot.startup_error {
+                    Some((
+                        crate::i18n::trf(
+                            "Task saved; background scheduler error: {error}",
+                            &[("error", &error)],
+                        ),
+                        true,
+                    ))
+                } else {
+                    snapshot
+                        .notice
+                        .map(|notice| (tr(notice).to_string(), false))
+                };
             }
             Err(error) => self.message = Some((error, true)),
         }
@@ -618,6 +661,209 @@ mod tests {
     use super::*;
     use crate::db::Driver;
     use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn save_persists_the_new_schedule_before_starting_the_service() {
+        let mut store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let mut task = fixture().draft;
+        task.id = store.save(&task, 100).unwrap();
+        task.sql = "SELECT 42".into();
+        let saved = save_task(
+            &mut store,
+            &task,
+            200,
+            || anyhow::bail!("service unavailable"),
+            || Ok(false),
+        )
+        .unwrap();
+        assert_eq!(saved.0, task.id);
+        assert!(saved.1.unwrap().contains("service unavailable"));
+        let jobs = store.jobs().unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].sql, "SELECT 42");
+        assert_eq!(jobs[0].next_run, 260);
+    }
+
+    #[test]
+    fn rejected_save_does_not_start_the_service() {
+        let mut store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let mut task = fixture().draft;
+        task.id = store.save(&task, 100).unwrap();
+        store.claim_due(160).unwrap().unwrap();
+        let started = std::cell::Cell::new(false);
+        assert!(
+            save_task(
+                &mut store,
+                &task,
+                200,
+                || {
+                    started.set(true);
+                    Ok(())
+                },
+                || Ok(false)
+            )
+            .is_err()
+        );
+        assert!(!started.get());
+    }
+
+    #[test]
+    fn service_observes_the_saved_query_instead_of_the_overdue_query() {
+        let path = std::env::temp_dir().join(format!(
+            "datacraft-save-order-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let mut store = Store::open(&path).unwrap();
+        let mut task = fixture().draft;
+        task.id = store.save(&task, 100).unwrap();
+        task.sql = "SELECT 42".into();
+        let result = save_task(
+            &mut store,
+            &task,
+            200,
+            || {
+                let mut service_store = Store::open(&path)?;
+                assert_eq!(service_store.jobs()?[0].sql, "SELECT 42");
+                assert!(service_store.claim_due(200)?.is_none());
+                Ok(())
+            },
+            || Ok(true),
+        )
+        .unwrap();
+        assert!(result.1.is_none());
+        drop(store);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn failed_startup_keeps_the_saved_id_for_retry() {
+        let mut store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let connections = [ConnectionConfig::new(1, Driver::Sqlite)];
+        let mut dialog = fixture();
+        let (id, startup_error, running) = save_task(
+            &mut store,
+            &dialog.draft,
+            100,
+            || anyhow::bail!("unavailable"),
+            || Ok(false),
+        )
+        .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        dialog.receiver = Some(receiver);
+        sender
+            .send(Ok(Snapshot {
+                jobs: store.jobs().unwrap(),
+                runs: Vec::new(),
+                selected: Some(id),
+                update: DraftUpdate::Replace,
+                notice: Some("Task saved"),
+                startup_error,
+                running,
+            }))
+            .unwrap();
+        dialog.poll(&connections);
+        assert_eq!(dialog.draft.id, id);
+        assert!(!dialog.dirty());
+        assert!(
+            dialog
+                .message
+                .as_ref()
+                .is_some_and(|(message, error)| *error && message.contains("Task saved"))
+        );
+        save_task(&mut store, &dialog.draft, 200, || Ok(()), || Ok(true)).unwrap();
+        assert_eq!(store.jobs().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn failed_status_probe_keeps_the_saved_task() {
+        for enabled in [false, true] {
+            let mut store = Store::open(std::path::Path::new(":memory:")).unwrap();
+            let mut task = fixture().draft;
+            task.enabled = enabled;
+            let (id, warning, running) = save_task(
+                &mut store,
+                &task,
+                100,
+                || Ok(()),
+                || anyhow::bail!("lock file unavailable"),
+            )
+            .unwrap();
+            assert_eq!(store.jobs().unwrap()[0].id, id);
+            assert!(warning.unwrap().contains("lock file unavailable"));
+            assert!(!running);
+        }
+    }
+
+    #[test]
+    fn backup_database_picker_accepts_manual_input_and_closes_on_selection() {
+        use egui::accesskit::Role;
+        let connection = ConnectionConfig::new(1, Driver::Postgres);
+        let mut dialog = backup_fixture();
+        dialog.draft.database.clear();
+        dialog.catalogs.insert(1, vec!["listed".into()]);
+        let mut first = true;
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(600.0, 400.0))
+            .build_ui_state(
+                move |ui, dialog: &mut Dialog| {
+                    if std::mem::take(&mut first) {
+                        crate::ui::theme::install_fonts(ui.ctx());
+                        return;
+                    }
+                    dialog.database_picker(ui, &connection);
+                },
+                dialog,
+            );
+        h.run_steps(3);
+        h.get_by_role(Role::ComboBox).click();
+        h.run_steps(3);
+        h.get_by_role(Role::TextInput).click();
+        h.run_steps(3);
+        assert!(
+            h.query_by_role(Role::TextInput).is_some(),
+            "Clicking the database editor must keep the picker open"
+        );
+        h.get_by_role(Role::TextInput)
+            .type_text(" unlisted database ");
+        h.run_steps(3);
+        assert_eq!(h.state().draft.database, " unlisted database ");
+        h.get_by_label("listed").click();
+        h.run_steps(3);
+        assert_eq!(h.state().draft.database, "listed");
+        assert!(h.query_by_role(Role::TextInput).is_none());
+    }
+
+    #[test]
+    fn escape_closes_a_picker_without_closing_the_scheduler() {
+        let connection = ConnectionConfig::new(1, Driver::Sqlite);
+        let mut dialog = fixture();
+        dialog.set_draft(dialog.draft.clone());
+        let mut first = true;
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(1000.0, 760.0))
+            .build_ui_state(
+                move |ui, dialog: &mut Dialog| {
+                    if std::mem::take(&mut first) {
+                        crate::ui::theme::install_fonts(ui.ctx());
+                        return;
+                    }
+                    dialog.render(ui.ctx(), std::slice::from_ref(&connection), &mut None);
+                },
+                dialog,
+            );
+        h.run_steps(3);
+        h.get_by_value("SQLite 1").click();
+        h.run_steps(3);
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(h.state().pending_navigation.is_none());
+        h.key_press(egui::Key::Escape);
+        h.run_steps(3);
+        assert!(matches!(
+            h.state().pending_navigation,
+            Some(Navigation::Close)
+        ));
+    }
 
     fn backup_fixture() -> Dialog {
         let mut dialog = fixture();
@@ -947,6 +1193,7 @@ mod tests {
                     selected: None,
                     update,
                     notice: None,
+                    startup_error: None,
                     running: true,
                 }))
                 .unwrap();
