@@ -18,6 +18,7 @@ pub mod explorer;
 pub mod icons;
 pub mod object_browser;
 pub mod object_organization;
+pub mod performance;
 pub mod plan_view;
 pub mod results;
 pub mod routine_dialog;

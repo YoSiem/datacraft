@@ -277,6 +277,7 @@ cargo-xwin downloads the Windows SDK and requires acceptance of Microsoft's lice
 | [Procedures and functions](docs/routines.md) | Browsing, the routine dialog, editing per engine and executing with parameters |
 | [Application icon](docs/application-icon.md) | Shared artwork and native Windows/macOS icon assets |
 | [Window header](docs/window-chrome.md) | Platform-specific window controls and validation notes |
+| [Low-power rendering](docs/low-power-rendering.md) | Software adapters, Remote Desktop and frame statistics |
 | [Screenshots](docs/screenshots/readme/README.md) | Reproduce the full-window documentation captures |
 
 ## Contributing
