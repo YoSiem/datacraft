@@ -515,7 +515,21 @@ mod tests {
             .unwrap();
 
         // A second handle must not release the first handle's process-wide read lock.
-        drop(Store::open(&path).unwrap());
+        let second = Store::open(&path);
+        if let Err(error) = &second {
+            assert!(
+                matches!(
+                    error.downcast_ref::<rusqlite::Error>(),
+                    Some(rusqlite::Error::SqliteFailure(error, _))
+                        if matches!(
+                            error.code,
+                            rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                        )
+                ),
+                "unexpected error opening the second store: {error:#}"
+            );
+        }
+        drop(second);
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",

@@ -50,7 +50,8 @@ jobs:
       - run: rustup toolchain install stable --profile minimal
       - run: rustup default stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --locked
+      - id: build
+        run: cargo build --locked
       - run: "cargo test --locked scheduler::"
       - run: cargo test --locked footer_actions_stay_visible
       - if: runner.os != 'Windows'
@@ -69,7 +70,7 @@ jobs:
           trap 'systemctl --user unset-environment DATACRAFT_TEST_DATA_DIR' EXIT
           cargo test --locked scheduler::service::tests::native_service_runs_sql_without_the_gui -- --ignored --exact
       - name: Exercise the macOS LaunchAgent
-        if: runner.os == 'macOS'
+        if: always() && runner.os == 'macOS' && steps.build.outcome == 'success'
         shell: bash
         run: |
           set -e
