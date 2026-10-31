@@ -14,6 +14,7 @@ on:
       - "src/ui/routine_dialog.rs"
       - "src/ui/routine_execute.rs"
       - "tests/scheduler-background.py"
+      - "tests/scheduler-diagnostics.py"
       - ".github/workflows/scheduler.yml"
   pull_request:
     paths:
@@ -28,6 +29,7 @@ on:
       - "src/ui/routine_dialog.rs"
       - "src/ui/routine_execute.rs"
       - "tests/scheduler-background.py"
+      - "tests/scheduler-diagnostics.py"
       - ".github/workflows/scheduler.yml"
   workflow_dispatch:
 
@@ -84,3 +86,6 @@ jobs:
           cargo test --locked scheduler::service::tests::native_service_runs_sql_without_the_gui -- --ignored --exact
       - if: runner.os == 'Windows'
         run: python tests/scheduler-background.py target/debug/datacraft.exe
+      - name: Diagnose disposable scheduler fixtures
+        if: failure() && runner.os != 'Windows'
+        run: python3 tests/scheduler-diagnostics.py

@@ -385,7 +385,13 @@ mod tests {
             loop {
                 let runs = store.runs(job_id).unwrap();
                 if let Some(run) = runs.first().filter(|run| run.status != "running") {
-                    assert_eq!(run.status, "succeeded", "{}", run.message);
+                    assert_eq!(
+                        run.status,
+                        "succeeded",
+                        "job_id={job_id}, task={}, message={}",
+                        if job_id == backup_id { "backup" } else { "SQL" },
+                        run.message
+                    );
                     if job_id == backup_id {
                         let snapshot = rusqlite::Connection::open(&run.message).unwrap();
                         assert_eq!(

@@ -500,6 +500,83 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn opening_another_store_preserves_active_sqlite_locks() {
+        let root =
+            std::env::temp_dir().join(format!("datacraft-scheduler-lock-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("scheduler.sqlite");
+        let store = Store::open(&path).unwrap();
+        store.0.execute_batch("BEGIN").unwrap();
+        store
+            .0
+            .query_row("SELECT COUNT(*) FROM jobs", [], |row| row.get::<_, i64>(0))
+            .unwrap();
+
+        // A second handle must not release the first handle's process-wide read lock.
+        drop(Store::open(&path).unwrap());
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "scheduler::tests::sqlite_lock_probe",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("DATACRAFT_TEST_SCHEDULER_LOCK_PROBE", &path)
+            .output()
+            .unwrap();
+        store.0.execute_batch("ROLLBACK").unwrap();
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(
+            output.status.success(),
+            "another process acquired an exclusive lock while a read transaction was active:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "internal child process lock probe"]
+    fn sqlite_lock_probe() {
+        let path = std::path::PathBuf::from(
+            std::env::var_os("DATACRAFT_TEST_SCHEDULER_LOCK_PROBE").unwrap(),
+        );
+        assert!(path.is_file());
+        assert!(
+            path.canonicalize()
+                .unwrap()
+                .starts_with(std::env::temp_dir().canonicalize().unwrap())
+        );
+        assert!(
+            path.parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("datacraft-scheduler-lock-")
+        );
+        let connection = Connection::open(&path).unwrap();
+        connection.busy_timeout(Duration::ZERO).unwrap();
+        let result = connection.execute_batch("BEGIN EXCLUSIVE");
+        if result.is_ok() {
+            connection.execute_batch("ROLLBACK").unwrap();
+        }
+        assert!(
+            matches!(
+                &result,
+                Err(rusqlite::Error::SqliteFailure(error, _))
+                    if matches!(
+                        error.code,
+                        rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                    )
+            ),
+            "expected the other process's read lock to prevent BEGIN EXCLUSIVE, got {result:?}"
+        );
+    }
+
     #[test]
     fn legacy_jobs_and_history_migrate_without_changes() {
         let path = std::env::temp_dir().join(format!(
